@@ -1,4 +1,4 @@
-# rl_1step_binomial.py
+# import packages
 import math
 import random
 import numpy as np
@@ -11,26 +11,28 @@ import torch.optim as optim
 # -------------------------
 class OneStepBinomialEnv:
     def __init__(self,
-                 S0=100.0,
-                 K=110.0,
-                 up_price=140.0,
-                 down_price=80.0,
-                 p_up=0.5,
-                 B=-40.0,
+                 S0=100.0, #initial stock price
+                 K=110.0, # strike price of the option
+                 up_price=140.0, # upper stock price of binomial model
+                 down_price=80.0, # lower stock price of binomial model
+                 probability=0.5, # probability of moving in either direction
+                 B= -40.0, # borrowed money from bank
                  market_option_price=None,   # if provided, used for arbitrage bonus
                  seed=0):
+        # converting into float such that Pytorch understands
         self.S0 = float(S0)
         self.K = float(K)
         self.up_price = float(up_price)
         self.down_price = float(down_price)
-        self.p_up = float(p_up)
+        self.probability = float(probability)
         self.B = float(B)
         self.market_option_price = None if market_option_price is None else float(market_option_price)
         self.rng = random.Random(seed)
         self.reset()
 
     def reset(self):
-        # state contains S0 and time_to_maturity (1)
+        # state contains S0 and time_to_maturity (1). Initializes the state back to reset state,
+        # such that the agent can start a new episode with the inital parameters
         self.t = 0
         self.state = np.array([self.S0, 1.0], dtype=np.float32)
         return self.state
@@ -42,7 +44,7 @@ class OneStepBinomialEnv:
         """
         delta = float(action_delta)
         # sample outcome
-        is_up = self.rng.random() < self.p_up
+        is_up = self.rng.random() < self.probability
         S_T = self.up_price if is_up else self.down_price
 
         # option payoff (call)
@@ -125,9 +127,9 @@ class ValueNet(nn.Module):
 # -------------------------
 def train_one_step_binomial(
     episodes=2000,
-    batch_size=64,
-    lr_policy=3e-4,
-    lr_value=1e-3,
+    batch_size=256,
+    lr_policy=1e-4,
+    lr_value=5e-4,
     gamma=1.0,
     seed=0,
     verbose=True,
@@ -138,7 +140,7 @@ def train_one_step_binomial(
     random.seed(seed)
 
     env = OneStepBinomialEnv(S0=100.0, K=110.0, up_price=140.0, down_price=80.0,
-                             p_up=0.5, B=0.0,
+                             probability=0.5, B=0.0,
                              market_option_price=(8.0 if use_market_price else None),
                              seed=seed)
 
@@ -198,6 +200,7 @@ def train_one_step_binomial(
             # update policy
             opt_policy.zero_grad()
             policy_loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)  # <--- ADD THIS
             opt_policy.step()
 
             # update value
@@ -223,7 +226,7 @@ def train_one_step_binomial(
 # -------------------------
 if __name__ == "__main__":
     # train for a small experiment
-    pol, val, env = train_one_step_binomial(episodes=5000, batch_size=128, seed=42, verbose=True, use_market_price=False)
+    pol, val, env = train_one_step_binomial(episodes=10000, batch_size=128, seed=42, verbose=True, use_market_price=False)
 
     # inspect policy at S0
     s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32)
