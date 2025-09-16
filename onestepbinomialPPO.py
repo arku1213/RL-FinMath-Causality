@@ -57,7 +57,8 @@ class OneStepBinomialEnv:
         # replication error
         err = portfolio - payoff
         # terminal reward: negative squared error (we want to minimize it)
-        reward = - (err ** 2)
+        # Use a more learning-friendly reward function
+        reward = -abs(err)  # L1 loss instead of L2 to reduce extreme penalties
 
         # optional arbitrage bonus:
         # If agent replicated payoff very closely, and market price < implied fair price,
@@ -100,7 +101,7 @@ class PolicyNet(nn.Module):
         )
         self.mean_head = nn.Linear(hidden, 1)       # output mean of Gaussian
         # we'll parameterize log_std as a learnable scalar
-        self.log_std = nn.Parameter(torch.tensor(-1.0))
+        self.log_std = nn.Parameter(torch.tensor(-0.5))  # exp(-0.5) ≈ 0.6 std
 
     def forward(self, x):
         h = self.net(x)
@@ -141,16 +142,16 @@ class ValueNet(nn.Module):
 # -------------------------
 def train_one_step_binomial_ppo(
     episodes=2000,
-    batch_size=512,
-    lr_policy=3e-4,
-    lr_value=3e-4,
+    batch_size=64,          # Much smaller batch size for better gradient estimates
+    lr_policy=3e-3,         # Higher learning rate since we removed bias
+    lr_value=3e-3,          # Higher learning rate
     gamma=1.0,
     clip_ratio=0.2,         # PPO clipping parameter
-    ppo_epochs=4,           # number of PPO updates per batch
-    target_kl=0.01,         # early stopping for KL divergence
-    entropy_coef=0.01,      # entropy bonus coefficient
-    value_coef=0.5,         # value loss coefficient
-    max_grad_norm=0.5,      # gradient clipping
+    ppo_epochs=10,          # More epochs per batch to extract more learning
+    target_kl=0.02,         # Slightly higher KL tolerance
+    entropy_coef=0.1,       # Much higher entropy for exploration
+    value_coef=1.0,         # Higher value coefficient
+    max_grad_norm=1.0,      # Higher grad norm limit
     seed=0,
     verbose=True,
     use_market_price=False
@@ -211,8 +212,9 @@ def train_one_step_binomial_ppo(
             returns = rewards
             advantages = returns - old_values.detach()
             
-            # normalize advantages (PPO improvement)
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+            # normalize advantages (PPO improvement) - only if we have variation
+            if advantages.std() > 1e-8:
+                advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
             # PPO update loop
             for ppo_epoch in range(ppo_epochs):
@@ -260,13 +262,15 @@ def train_one_step_binomial_ppo(
                     if kl_div > target_kl:
                         break
 
-            # logging
+            # logging (more detailed)
             mean_reward = rewards.mean().item()
             mean_delta = actions.mean().item()
+            std_delta = actions.std().item()
+            mean_abs_advantage = torch.abs(advantages).mean().item()
             # implied fair price estimate using average delta (B=0)
             fair_price_est = mean_delta * env.S0 + env.B
             if verbose:
-                print(f"ep {ep:5d} | batch mean reward {mean_reward:.4f} | mean Δ {mean_delta:.4f} | fair_price ≈ {fair_price_est:.4f} | KL {kl_div:.6f} | epochs {ppo_epoch+1}")
+                print(f"ep {ep:5d} | reward {mean_reward:.2f} | Δ {mean_delta:.3f}±{std_delta:.3f} | price {fair_price_est:.2f} | |adv| {mean_abs_advantage:.2f} | KL {kl_div:.4f} | epochs {ppo_epoch+1}")
 
             # reset episode_data
             episode_data = []
