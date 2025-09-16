@@ -16,7 +16,7 @@ class OneStepBinomialEnv:
                  up_price=140.0,
                  down_price=80.0,
                  p_up=0.5,
-                 B=0.0,
+                 B=-40.0,
                  market_option_price=None,   # if provided, used for arbitrage bonus
                  seed=0):
         self.S0 = float(S0)
@@ -168,7 +168,7 @@ def train_one_step_binomial(
         episode_data.append({
             's': s,
             'a': action,
-            'logp': logp.detach(),
+            'logp': logp,   # keep gradient
             'r': reward,
             'next_s': next_s,
             'info': info
