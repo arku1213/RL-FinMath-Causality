@@ -84,4 +84,4 @@ ep 9984 | reward -21.37 | Δ 0.143±0.216 | price 14.29 | |adv| 0.78 | KL 0.0052
 Implied fair price X = Δ \* S0 + B = 14.8481
 Mean abs replication error over 1000 sims: 10.534896
 
-We can see that the delta hedge is very low at 0.1485, and that the fair price is a bit high at 14.84.
+We can see that the delta hedge is very low at 0.1485, and that the fair price is a bit high at 14.84 (when the number of episodes is 10 000)
