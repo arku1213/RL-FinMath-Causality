@@ -161,7 +161,7 @@ def train_one_step_binomial_ppo(
     random.seed(seed)
 
     env = OneStepBinomialEnv(S0=100.0, K=110.0, up_price=140.0, down_price=80.0,
-                             probability=0.5, B=0.0,
+                             probability=0.5, B= -40.0,
                              market_option_price=(8.0 if use_market_price else None),
                              seed=seed)
 
