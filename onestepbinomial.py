@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 # -------------------------
 # Environment: 1-step binomial
@@ -127,7 +128,7 @@ class ValueNet(nn.Module):
 # -------------------------
 def train_one_step_binomial(
     episodes=2000,
-    batch_size=256,
+    batch_size=512,
     lr_policy=1e-4,
     lr_value=5e-4,
     gamma=1.0,
@@ -184,26 +185,24 @@ def train_one_step_binomial(
             logps = torch.stack([d['logp'] for d in episode_data])
             rewards = torch.tensor(np.array([d['r'] for d in episode_data]), dtype=torch.float32)
 
-            # compute returns (no discounting since single step per episode)
-            returns = rewards  # gamma=1, single-step episodes
+            # compute returns (gamma=1, single-step episodes)
+            returns = rewards
 
             # baseline (value) predictions
             values = value(states)
-            advantages = returns - values.detach()
 
-            # policy loss (REINFORCE with baseline)
-            policy_loss = - (logps * advantages).mean()
+            # advantage for policy gradient (detach to avoid backprop through value network)
+            advantage = (returns - values).detach()
 
-            # value loss (MSE)
-            value_loss = nn.functional.mse_loss(values, returns)
-
-            # update policy
+            # policy loss
+            policy_loss = -(logps * advantage).mean()
             opt_policy.zero_grad()
             policy_loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)  # <--- ADD THIS
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
             opt_policy.step()
 
-            # update value
+            # value loss
+            value_loss = F.mse_loss(values, returns)
             opt_value.zero_grad()
             value_loss.backward()
             opt_value.step()
@@ -213,9 +212,10 @@ def train_one_step_binomial(
             mean_delta = actions.mean().item()
             # implied fair price estimate using average delta (B=0)
             fair_price_est = mean_delta * env.S0 + env.B
-            if verbose and (ep % (batch_size * 5) == 0):
+            if verbose:
                 print(f"ep {ep:5d} | batch mean reward {mean_reward:.4f} | mean Δ {mean_delta:.4f} | fair_price ≈ {fair_price_est:.4f}")
 
+            # reset episode_data
             episode_data = []
 
     # return trained components and environment for inspection
@@ -226,7 +226,13 @@ def train_one_step_binomial(
 # -------------------------
 if __name__ == "__main__":
     # train for a small experiment
-    pol, val, env = train_one_step_binomial(episodes=10000, batch_size=128, seed=42, verbose=True, use_market_price=False)
+    pol, val, env = train_one_step_binomial(
+        episodes=10000,
+        batch_size=128,
+        seed=42,
+        verbose=True,
+        use_market_price=False
+    )
 
     # inspect policy at S0
     s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32)
@@ -234,6 +240,7 @@ if __name__ == "__main__":
     mean = mean.item()
     std = std.item()
     fair_price_est = mean * env.S0 + env.B
+
     print("\n--- Final policy at S0 ---")
     print(f"Δ (mean) = {mean:.4f}, std = {std:.4f}")
     print(f"Implied fair price X = Δ * S0 + B = {fair_price_est:.4f}")
@@ -248,5 +255,6 @@ if __name__ == "__main__":
         _, _, _, info = env.step(delta)
         errs.append(info['err'])
         deltas.append(delta)
+
     errs = np.array(errs)
     print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
