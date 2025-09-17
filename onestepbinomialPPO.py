@@ -97,19 +97,26 @@ class OneStepBinomialEnv:
 # -------------------------
 # Policy and Value networks
 # -------------------------
+
+# neural network class for the policy (the agent’s decision rule for choosing hedge ratio
 class PolicyNet(nn.Module):
+    # obs_dim: dimension of the observation space (2 for [S_t, time_to_maturity])
+    # hidden: number of neurons in the neural network
     def __init__(self, obs_dim, hidden=64):
         super().__init__()
+        # simple 2-layer feedforward network with tanh activations, tanh makes output between -1 and 1
         self.net = nn.Sequential(
             nn.Linear(obs_dim, hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
         )
-        self.mean_head = nn.Linear(hidden, 1)       # output mean of Gaussian
+        self.mean_head = nn.Linear(hidden, 1)       # output mean of Gaussian (mean hedge ratio))
         # we'll parameterize log_std as a learnable scalar
-        self.log_std = nn.Parameter(torch.tensor(-0.5))  # exp(-0.5) ≈ 0.6 std
+        # one learnable scalar standard deviation
+        self.log_std = nn.Parameter(torch.tensor(-0.5))  # exp(-0.5) ≈ 0.6 std (starting standard deviation)
 
+    # Constructs a Gaussian distribution for the hedge ratio
     def forward(self, x):
         h = self.net(x)
         mean = self.mean_head(h).squeeze(-1)
@@ -123,8 +130,8 @@ class PolicyNet(nn.Module):
         
         if action is None:
             action = dist.sample()
-        
-        log_prob = dist.log_prob(action)
+
+        log_prob = dist.log_prob(action) #how likely the chosen hedge ratio was under the current policy. Used in PPO’s update formula
         entropy = dist.entropy()
         
         return action, log_prob, entropy
