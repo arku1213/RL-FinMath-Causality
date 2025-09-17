@@ -39,31 +39,35 @@ class OneStepBinomialEnv:
         return self.state
 
     def step(self, action_delta):
+
         """
-        action_delta: float (hedge ratio chosen by agent)
-        returns: next_state, reward, done, info
+        action_delta: hedge ratio
+        returns: next_state (new environment state after step), reward (scalar),
+                 done (boolean indicating episode is over), info (dict with extra info)
         """
+
+        # float for hedge ratio
         delta = float(action_delta)
-        # sample outcome
+        
+        # stochastic outcome, determines up or down movement
         is_up = self.rng.random() < self.probability
         S_T = self.up_price if is_up else self.down_price
 
-        # option payoff (call)
+        # stanadrd European call option payoff, profit if stock above price, 0 otherwise
         payoff = max(S_T - self.K, 0.0)
 
-        # portfolio at maturity (we assume B fixed and no interest)
+        # portfolio at maturity
         portfolio = delta * S_T + self.B
 
         # replication error
         err = portfolio - payoff
-        # terminal reward: negative squared error (we want to minimize it)
-        # Use a more learning-friendly reward function
-        reward = -abs(err)  # L1 loss instead of L2 to reduce extreme penalties
+
+        # reward: negative absolute error (want to minimize error)
+        reward = -abs(err)  # L1 (Lasso) loss used to reduce extreme penalties
 
         # optional arbitrage bonus:
         # If agent replicated payoff very closely, and market price < implied fair price,
         # then agent could buy at market price and hedge, realizing (fair_price - market_price).
-        # This is a simplified proxy for realized arbitrage profit in the 1-step perfect replication case.
         arbitrage_bonus = 0.0
         if (self.market_option_price is not None):
             fair_price_estimate = delta * self.S0 + self.B
@@ -74,8 +78,11 @@ class OneStepBinomialEnv:
                     arbitrage_bonus = profit_est
         reward = reward + arbitrage_bonus
 
-        next_state = np.array([S_T, 0.0], dtype=np.float32)  # terminal
+        # stock price at maturity + time-to-maturity 0 (terminal)
+        next_state = np.array([S_T, 0.0], dtype=np.float32)  
         done = True
+
+        # info dict for debugging
         info = {
             'is_up': is_up,
             'S_T': S_T,
