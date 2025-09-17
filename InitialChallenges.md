@@ -236,3 +236,8 @@ Implied fair price X = Δ \* S0 + B = 9.2946
 Mean abs replication error over 1000 sim8.12 | Δ 0.096±0.166
 
 B was 0 instead of -40
+
+Replication - at 400 000 episodes, we get --- Final policy at S0 ---
+Δ (mean) = 0.5047, std = 0.0107
+Implied fair price X = Δ \* S0 + B = 10.4721
+Mean abs replication error over 1000 sims: 0.519605
