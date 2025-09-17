@@ -154,33 +154,41 @@ class ValueNet(nn.Module):
 # -------------------------
 # PPO Training routine
 # -------------------------
+# define defaults for PPO hyperparameters
 def train_one_step_binomial_ppo(
-    episodes=2000,
-    batch_size=64,          # Much smaller batch size for better gradient estimates
-    lr_policy=3e-3,         # Higher learning rate since we removed bias
-    lr_value=3e-3,          # Higher learning rate
-    gamma=1.0,
-    clip_ratio=0.2,         # PPO clipping parameter
-    ppo_epochs=10,          # More epochs per batch to extract more learning
-    target_kl=0.02,         # Slightly higher KL tolerance
-    entropy_coef=0.1,       # Much higher entropy for exploration
-    value_coef=1.0,         # Higher value coefficient
-    max_grad_norm=1.0,      # Higher grad norm limit
+    episodes=2000,          # Number of interactions with the environment, each episode = one option hedging attempt
+    batch_size=64,          # Number of episodes before update
+    lr_policy=3e-3,         # Updates how hedge ratio is chosen
+    lr_value=3e-3,          # Updates how well the critic predicts payoff error
+    gamma=1.0,              # Discount factor (how much future rewards count)
+    clip_ratio=0.2,         # Controls how much the new policy can deviate from the old policy
+    ppo_epochs=10,          
+    target_kl=0.02,         
+    entropy_coef=0.1,       
+    value_coef=1.0,         # Weight for the value loss in the total update (balanced)
+    max_grad_norm=1.0,      
     seed=0,
     verbose=True,
-    use_market_price=False
+    use_market_price=False  # If true - adds an arbitrage incentive (bonus reward if replication is exact and market option price is exploitable)
+    # If false - pure replication focus     
 ):
+    # seeding
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
+    # environment setup
     env = OneStepBinomialEnv(S0=100.0, K=110.0, up_price=140.0, down_price=80.0,
                              probability=0.5, B= -40.0,
                              market_option_price=(8.0 if use_market_price else None),
                              seed=seed)
 
     obs_dim = 2  # [S_t, time_to_maturity]
+
+    # Policy network outputs hedge ratio
     policy = PolicyNet(obs_dim)
+
+    # Value network estimates expected payoff error.
     value = ValueNet(obs_dim)
     opt_policy = optim.Adam(policy.parameters(), lr=lr_policy)
     opt_value = optim.Adam(value.parameters(), lr=lr_value)
@@ -188,6 +196,7 @@ def train_one_step_binomial_ppo(
     # storage for batch
     episode_data = []
 
+    # reset environment to inital state, sample hedge ratio, store log-prob
     for ep in range(1, episodes + 1):
         s = env.reset()
         s_tensor = torch.tensor(s, dtype=torch.float32)
@@ -226,7 +235,7 @@ def train_one_step_binomial_ppo(
             returns = rewards
             advantages = returns - old_values.detach()
             
-            # normalize advantages (PPO improvement) - only if we have variation
+            # normalize advantages (PPO improvement)
             if advantages.std() > 1e-8:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
@@ -239,7 +248,7 @@ def train_one_step_binomial_ppo(
                 # PPO ratio
                 ratio = torch.exp(new_log_probs - old_log_probs)
 
-                # PPO clipped surrogate objective
+                # Encourages policy to move in direction of advantage but prevents giant updates
                 surr1 = ratio * advantages
                 surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * advantages
                 policy_loss = -torch.min(surr1, surr2).mean()
@@ -276,12 +285,12 @@ def train_one_step_binomial_ppo(
                     if kl_div > target_kl:
                         break
 
-            # logging (more detailed)
+            # Tracks how hedge ratio and fair price evolve over training, mean reward should go to 0
             mean_reward = rewards.mean().item()
             mean_delta = actions.mean().item()
             std_delta = actions.std().item()
             mean_abs_advantage = torch.abs(advantages).mean().item()
-            # implied fair price estimate using average delta (B=0)
+            # implied fair price estimate using average delta 
             fair_price_est = mean_delta * env.S0 + env.B
             if verbose:
                 print(f"ep {ep:5d} | reward {mean_reward:.2f} | Δ {mean_delta:.3f}±{std_delta:.3f} | price {fair_price_est:.2f} | |adv| {mean_abs_advantage:.2f} | KL {kl_div:.4f} | epochs {ppo_epoch+1}")
@@ -329,3 +338,7 @@ if __name__ == "__main__":
 
     errs = np.array(errs)
     print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
+
+#Mean abs replication error → calculated after training, by simulating many episodes with the final policy.
+
+#Std of hedge ratio → stochastic trained policy, so the hedge ratio will have some variation.
