@@ -241,3 +241,9 @@ Replication - at 400 000 episodes, we get --- Final policy at S0 ---
 Δ (mean) = 0.5047, std = 0.0107
 Implied fair price X = Δ \* S0 + B = 10.4721
 Mean abs replication error over 1000 sims: 0.519605
+
+Super Replication - at 400 000 episodes, we get
+--- Final policy at S0 ---
+Δ (mean) = 0.5284, std = 0.0116
+Implied fair price X = Δ \* S0 + B = 12.8351
+Mean abs replication error over 1000 sims: 3.120286
