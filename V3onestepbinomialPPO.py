@@ -1,4 +1,4 @@
-# FOCUSED ON SUPER-REPLICATION
+# FOCUSED ON REPLICATION WITH LEARNING Δ AND B
 
 # import packages
 import math
@@ -14,12 +14,11 @@ import torch.nn.functional as F
 # -------------------------
 class OneStepBinomialEnv:
     def __init__(self,
-                 S0=100.0, #initial stock price
+                 S0=100.0, # initial stock price
                  K=110.0, # strike price of the option
                  up_price=140.0, # upper stock price of binomial model
                  down_price=80.0, # lower stock price of binomial model
                  probability=0.5, # probability of moving in either direction
-                 B= -40.0, # borrowed money from bank
                  market_option_price=None,   # if provided, used for arbitrage bonus
                  seed=0):
         # converting into float such that Pytorch understands
@@ -28,7 +27,6 @@ class OneStepBinomialEnv:
         self.up_price = float(up_price)
         self.down_price = float(down_price)
         self.probability = float(probability)
-        self.B = float(B)
         self.market_option_price = None if market_option_price is None else float(market_option_price)
         self.rng = random.Random(seed)
         self.reset()
@@ -40,44 +38,36 @@ class OneStepBinomialEnv:
         self.state = np.array([self.S0, 1.0], dtype=np.float32)
         return self.state
 
-    def step(self, action_delta):
-
+    def step(self, action):
         """
-        action_delta: hedge ratio
+        action: [delta, B] where
+            delta = hedge ratio
+            B = bank account position
         returns: next_state (new environment state after step), reward (scalar),
                  done (boolean indicating episode is over), info (dict with extra info)
         """
 
-        # float for hedge ratio
-        delta = float(action_delta)
+        delta, B = float(action[0]), float(action[1])
         
         # stochastic outcome, determines up or down movement
         is_up = self.rng.random() < self.probability
         S_T = self.up_price if is_up else self.down_price
 
-        # standard European call option payoff, profit if stock above price, 0 otherwise
+        # standard European call option payoff, profit if stock above strike, 0 otherwise
         payoff = max(S_T - self.K, 0.0)
 
         # portfolio at maturity
-        portfolio = delta * S_T + self.B
+        portfolio = delta * S_T + B
 
         # replication error
         err = portfolio - payoff
 
-        # reward: harsher penalty if under-hedged
-        if portfolio >= payoff:
-            # If portfolio covers payoff → reward = -|portfolio - payoff|
-            reward = -abs(err)
-        else:
-            # If portfolio < payoff → big penalty
-            reward = -100.0
+        reward = -abs(err)
 
         # optional arbitrage bonus:
-        # If agent replicated payoff very closely, and market price < implied fair price,
-        # then agent could buy at market price and hedge, realizing (fair_price - market_price).
         arbitrage_bonus = 0.0
         if (self.market_option_price is not None):
-            fair_price_estimate = delta * self.S0 + self.B
+            fair_price_estimate = delta * self.S0 + B
             # treat replication as successful if absolute error tiny
             if abs(err) <= 1e-6:
                 profit_est = fair_price_estimate - self.market_option_price
@@ -97,7 +87,7 @@ class OneStepBinomialEnv:
             'portfolio': portfolio,
             'err': err,
             'arbitrage_bonus': arbitrage_bonus,
-            'fair_price_estimate': (delta * self.S0 + self.B)
+            'fair_price_estimate': (delta * self.S0 + B)
         }
         return next_state, reward, done, info
 
@@ -105,7 +95,7 @@ class OneStepBinomialEnv:
 # Policy and Value networks
 # -------------------------
 
-# neural network class for the policy (the agent’s decision rule for choosing hedge ratio
+# neural network class for the policy (the agent’s decision rule for choosing hedge ratio and B)
 class PolicyNet(nn.Module):
     # obs_dim: dimension of the observation space (2 for [S_t, time_to_maturity])
     # hidden: number of neurons in the neural network
@@ -118,29 +108,39 @@ class PolicyNet(nn.Module):
             nn.Linear(hidden, hidden),
             nn.Tanh(),
         )
-        self.mean_head = nn.Linear(hidden, 1)       # output mean of Gaussian (mean hedge ratio))
-        # we'll parameterize log_std as a learnable scalar
-        # one learnable scalar standard deviation
-        self.log_std = nn.Parameter(torch.tensor(-0.5))  # exp(-0.5) ≈ 0.6 std (starting standard deviation)
+        # separate heads for hedge ratio Δ and bank account B
+        self.mean_delta = nn.Linear(hidden, 1)
+        self.mean_B = nn.Linear(hidden, 1)
 
-    # Constructs a Gaussian distribution for the hedge ratio
+        # learnable log stds for both outputs
+        self.log_std_delta = nn.Parameter(torch.tensor(-0.5))
+        self.log_std_B = nn.Parameter(torch.tensor(-0.5))
+
+    # Constructs two Gaussian distributions: one for Δ, one for B
     def forward(self, x):
         h = self.net(x)
-        mean = self.mean_head(h).squeeze(-1)
-        std = torch.exp(self.log_std)
-        return mean, std
+        mean_delta = self.mean_delta(h).squeeze(-1)
+        mean_B = self.mean_B(h).squeeze(-1)
+        std_delta = torch.exp(self.log_std_delta)
+        std_B = torch.exp(self.log_std_B)
+        return mean_delta, std_delta, mean_B, std_B
 
     def get_action_and_value(self, x, action=None):
-        """PPO-style method that returns action, log_prob, and entropy"""
-        mean, std = self.forward(x)
-        dist = torch.distributions.Normal(mean, std)
-        
-        if action is None:
-            action = dist.sample()
+        """PPO-style method that returns [delta, B], log_prob, and entropy"""
+        mean_delta, std_delta, mean_B, std_B = self.forward(x)
+        dist_delta = torch.distributions.Normal(mean_delta, std_delta)
+        dist_B = torch.distributions.Normal(mean_B, std_B)
 
-        log_prob = dist.log_prob(action) #how likely the chosen hedge ratio was under the current policy. Used in PPO’s update formula
-        entropy = dist.entropy()
-        
+        if action is None:
+            delta = dist_delta.sample()
+            B = dist_B.sample()
+        else:
+            delta, B = action[:, 0], action[:, 1]
+
+        log_prob = dist_delta.log_prob(delta) + dist_B.log_prob(B)
+        entropy = dist_delta.entropy() + dist_B.entropy()
+
+        action = torch.stack([delta, B], dim=-1)
         return action, log_prob, entropy
 
 
@@ -161,11 +161,10 @@ class ValueNet(nn.Module):
 # -------------------------
 # PPO Training routine
 # -------------------------
-# define defaults for PPO hyperparameters
 def train_one_step_binomial_ppo(
     episodes=2000,          # Number of interactions with the environment, each episode = one option hedging attempt
     batch_size=64,          # Number of episodes before update
-    lr_policy=3e-3,         # Updates how hedge ratio is chosen
+    lr_policy=3e-3,         # Updates how hedge ratio and B are chosen
     lr_value=3e-3,          # Updates how well the critic predicts payoff error
     gamma=1.0,              # Discount factor (how much future rewards count)
     clip_ratio=0.2,         # Controls how much the new policy can deviate from the old policy
@@ -186,13 +185,13 @@ def train_one_step_binomial_ppo(
 
     # environment setup
     env = OneStepBinomialEnv(S0=100.0, K=110.0, up_price=140.0, down_price=80.0,
-                             probability=0.5, B= -40.0,
+                             probability=0.5,
                              market_option_price=(8.0 if use_market_price else None),
                              seed=seed)
 
     obs_dim = 2  # [S_t, time_to_maturity]
 
-    # Policy network outputs hedge ratio
+    # Policy network outputs hedge ratio Δ and bank position B
     policy = PolicyNet(obs_dim)
 
     # Value network estimates expected payoff error.
@@ -203,27 +202,27 @@ def train_one_step_binomial_ppo(
     # storage for batch
     episode_data = []
 
-    # reset environment to inital state, sample hedge ratio, store log-prob
+    # reset environment to inital state, sample hedge ratio and B, store log-prob
     for ep in range(1, episodes + 1):
         s = env.reset()
         s_tensor = torch.tensor(s, dtype=torch.float32)
         
         # Sample action using PPO-style method
         with torch.no_grad():
-            action, old_log_prob, _ = policy.get_action_and_value(s_tensor)
+            action, old_log_prob, _ = policy.get_action_and_value(s_tensor.unsqueeze(0))
             old_value = value(s_tensor)
-        
-        action_item = action.item()
+
+        action_np = action.squeeze(0).numpy()  # [delta, B]
 
         # step env
-        next_s, reward, done, info = env.step(action_item)
+        next_s, reward, done, info = env.step(action_np)
 
         # store (including old_log_prob and old_value for PPO)
         episode_data.append({
             's': s,
-            'a': action_item,
-            'old_log_prob': old_log_prob,   # store old policy log prob
-            'old_value': old_value,         # store old value estimate
+            'a': action_np,
+            'old_log_prob': old_log_prob,
+            'old_value': old_value,
             'r': reward,
             'next_s': next_s,
             'info': info
@@ -292,15 +291,18 @@ def train_one_step_binomial_ppo(
                     if kl_div > target_kl:
                         break
 
-            # Tracks how hedge ratio and fair price evolve over training, mean reward should go to 0
+            # Tracks how hedge ratio and bank position evolve over training
             mean_reward = rewards.mean().item()
-            mean_delta = actions.mean().item()
-            std_delta = actions.std().item()
+            mean_delta = actions[:, 0].mean().item()
+            std_delta = actions[:, 0].std().item()
+            mean_B = actions[:, 1].mean().item()
+            std_B = actions[:, 1].std().item()
             mean_abs_advantage = torch.abs(advantages).mean().item()
-            # implied fair price estimate using average delta 
-            fair_price_est = mean_delta * env.S0 + env.B
+            fair_price_est = mean_delta * env.S0 + mean_B
             if verbose:
-                print(f"ep {ep:5d} | reward {mean_reward:.2f} | Δ {mean_delta:.3f}±{std_delta:.3f} | price {fair_price_est:.2f} | |adv| {mean_abs_advantage:.2f} | KL {kl_div:.4f} | epochs {ppo_epoch+1}")
+                print(f"ep {ep:5d} | reward {mean_reward:.2f} | Δ {mean_delta:.3f}±{std_delta:.3f} | "
+                      f"B {mean_B:.3f}±{std_B:.3f} | price {fair_price_est:.2f} | "
+                      f"|adv| {mean_abs_advantage:.2f} | KL {kl_div:.4f} | epochs {ppo_epoch+1}")
 
             # reset episode_data
             episode_data = []
@@ -323,29 +325,27 @@ if __name__ == "__main__":
 
     # inspect policy at S0
     s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32)
-    mean, std = pol(s0)
-    mean = mean.item()
-    std = std.item()
-    fair_price_est = mean * env.S0 + env.B
+    mean_delta, std_delta, mean_B, std_B = pol(s0)
+    mean_delta = mean_delta.item()
+    std_delta = std_delta.item()
+    mean_B = mean_B.item()
+    std_B = std_B.item()
+    fair_price_est = mean_delta * env.S0 + mean_B
 
     print("\n--- Final policy at S0 ---")
-    print(f"Δ (mean) = {mean:.4f}, std = {std:.4f}")
+    print(f"Δ (mean) = {mean_delta:.4f}, std = {std_delta:.4f}")
+    print(f"B (mean) = {mean_B:.4f}, std = {std_B:.4f}")
     print(f"Implied fair price X = Δ * S0 + B = {fair_price_est:.4f}")
 
     # run many sims to check replication error
     N = 1000
     errs = []
-    deltas = []
     for _ in range(N):
         # sample action deterministically as mean (evaluation)
-        delta = mean
-        _, _, _, info = env.step(delta)
+        delta = mean_delta
+        B = mean_B
+        _, _, _, info = env.step([delta, B])
         errs.append(info['err'])
-        deltas.append(delta)
 
     errs = np.array(errs)
     print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
-
-#Mean abs replication error → calculated after training, by simulating many episodes with the final policy.
-
-#Std of hedge ratio → stochastic trained policy, so the hedge ratio will have some variation.
