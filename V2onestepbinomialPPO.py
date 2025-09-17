@@ -1,4 +1,4 @@
-# FOCUSED ON REPLICATION
+# FOCUSED ON SUPER-REPLICATION
 
 # import packages
 import math
@@ -55,7 +55,7 @@ class OneStepBinomialEnv:
         is_up = self.rng.random() < self.probability
         S_T = self.up_price if is_up else self.down_price
 
-        # stanadrd European call option payoff, profit if stock above price, 0 otherwise
+        # standard European call option payoff, profit if stock above price, 0 otherwise
         payoff = max(S_T - self.K, 0.0)
 
         # portfolio at maturity
@@ -64,8 +64,13 @@ class OneStepBinomialEnv:
         # replication error
         err = portfolio - payoff
 
-        # reward: negative absolute error (want to minimize error)
-        reward = -abs(err)  # L1 (Lasso) loss used to reduce extreme penalties
+        # reward: harsher penalty if under-hedged
+        if portfolio >= payoff:
+            # If portfolio covers payoff → reward = -|portfolio - payoff|
+            reward = -abs(err)
+        else:
+            # If portfolio < payoff → big penalty
+            reward = -100.0
 
         # optional arbitrage bonus:
         # If agent replicated payoff very closely, and market price < implied fair price,
