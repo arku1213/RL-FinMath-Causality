@@ -284,7 +284,7 @@ def train_one_step_binomial_ppo(
 if __name__ == "__main__":
     # train for a small experiment
     pol, val, env = train_one_step_binomial_ppo(
-        episodes= 150000,
+        episodes= 200000,
         batch_size= 128,
         seed=42,
         verbose=True,
