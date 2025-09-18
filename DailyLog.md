@@ -23,4 +23,5 @@ Next goals:
 
 - Expand model to higher periods (look into using C++)
 - Looking into other RL algos + looking into the algos that are already used for Black Scholes
+- Look into simulated annealing
 - Looking into constraints
