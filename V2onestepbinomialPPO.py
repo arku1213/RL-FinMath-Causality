@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
+import torch.nn.functional as functional
 
 # -------------------------
 # Environment: 1-step binomial
@@ -270,8 +270,8 @@ def train_one_step_binomial_ppo(
                 value_pred_clipped = old_values + torch.clamp(
                     new_values - old_values, -clip_ratio, clip_ratio
                 )
-                value_loss1 = F.mse_loss(new_values, returns)
-                value_loss2 = F.mse_loss(value_pred_clipped, returns)
+                value_loss1 = functional.mse_loss(new_values, returns)
+                value_loss2 = functional.mse_loss(value_pred_clipped, returns)
                 value_loss = value_coef * torch.max(value_loss1, value_loss2)
 
                 # policy update
