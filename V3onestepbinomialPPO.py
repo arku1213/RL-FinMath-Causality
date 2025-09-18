@@ -11,6 +11,14 @@ import torch.nn.functional as functional
 # -------------------------
 # Environment Setup - includes setting up initial parameters and step function
 # -------------------------
+
+# First, a class is made to simulate the environment for the one-step binomial model
+# The environment provides the current stock price and time to maturity as state
+# The agent takes an action consisting of hedge ratio (delta) and bank position (B)
+# The environment then simulates the stock price movement (up or down) and computes the reward
+# The reward is based on the replication error (portfolio - option payoff) and optionally includes an arbitrage bonus
+# The episode ends after one step (one-step binomial model)
+
 class OneStepBinomialEnv:
     def __init__(self,
                  S0=100.0, # initial stock price
@@ -29,56 +37,45 @@ class OneStepBinomialEnv:
         self.market_option_price = None if market_option_price is None else float(market_option_price)
         self.rng = random.Random(seed)
         self.reset()
-
+    
+    # This function resets the environment to the initial state
     def reset(self):
-        # state contains S0 and time_to_maturity (1). Initializes the state back to reset state,
-        # such that the agent can start a new episode with the inital parameters
-        self.t = 0
-        self.state = np.array([self.S0, 1.0], dtype=np.float32)
-        return self.state
+        self.t = 0 # initializes time to 0
+        self.state = np.array([self.S0, 1.0], dtype=np.float32) # state = [stock price, time to maturity]
+        return self.state # returns the initial state
 
+    # This function takes an action (delta, B) and returns the next state, reward, done flag, and info dict
     def step(self, action):
-        """
-        action: [delta, B] where
-            delta = hedge ratio
-            B = bank account position
-        returns: next_state (new environment state after step), reward (scalar),
-                 done (boolean indicating episode is over), info (dict with extra info)
-        """
 
-        delta, B = float(action[0]), float(action[1])
-        
-        # stochastic outcome, determines up or down movement
-        is_up = self.rng.random() < self.probability
-        S_T = self.up_price if is_up else self.down_price
+        delta, B = float(action[0]), float(action[1]) # Takes an action as input (two-element array) and assigns to hedge ratio and bank position, representing a hedging strategy
 
-        # standard European call option payoff, profit if stock above strike, 0 otherwise
-        payoff = max(S_T - self.K, 0.0)
+        is_up = self.rng.random() < self.probability # To determine if stock goes up or down, a random number is generated and compared to the probability of an upward move
 
-        # portfolio at maturity
-        portfolio = delta * S_T + B
+        S_T = self.up_price if is_up else self.down_price # The stock price at maturity (time t) is set based on the outcome of the random draw
 
-        # replication error
-        err = portfolio - payoff
+        payoff = max(S_T - self.K, 0.0) # The option's payoff is the maximum of the final stock price minus the strike price (self.K) or zero. This is a standard formula for a call option.
 
-        reward = -abs(err)
+        portfolio = delta * S_T + B # The portfolio's value at maturity is calculated as the sum of the value of the stock position (delta * S_T) and the bank position (B). This differs from the fair price, which is calculated using the intial stock position.
 
-        # optional arbitrage bonus:
+        err = portfolio - payoff # The error is the  difference between the final portfolio value and the option's payoff. The  agent's goal is to find the values for the hedge ratio Δ and bank position B that minimize this error.
+
+        reward = -abs(err) # The reward incentivizes the agent to choose an action (Δ and B) that makes the portfolio value at maturity as close as possible to the option's payoff. A smaller error results in a higher (less negative) reward.
+
+        # optional arbitrage bonus
         arbitrage_bonus = 0.0
         if (self.market_option_price is not None):
             fair_price_estimate = delta * self.S0 + B
-            # treat replication as successful if absolute error tiny
-            if abs(err) <= 1e-6:
-                profit_est = fair_price_estimate - self.market_option_price
+            if abs(err) <= 1e-6: #If the replication error is tiny, the model considers the replication successful
+                profit_est = fair_price_estimate - self.market_option_price #profit by comparing the fair price of the portfolio (fair_price_estimate) to a known market option price
+                #encourages the agent to find profitable trading strategies
                 if profit_est > 0:
                     arbitrage_bonus = profit_est
         reward = reward + arbitrage_bonus
 
-        # stock price at maturity + time-to-maturity 0 (terminal)
-        next_state = np.array([S_T, 0.0], dtype=np.float32)  
-        done = True
+        next_state = np.array([S_T, 0.0], dtype=np.float32)  # The next state is the final stock price and a time-to-maturity of 0, indicating the end of the simulation.
+        done = True # set to True because the simulation represents a single time step to maturity.
 
-        # info dict for debugging
+        # The info dictionary provides additional information about the step, including whether the stock went up, the final stock price, the option payoff, the portfolio value, the replication error, any arbitrage bonus received, and an estimate of the fair price of the option based on the chosen hedge ratio and bank position. This can be useful for debugging and analysis.
         info = {
             'is_up': is_up,
             'S_T': S_T,

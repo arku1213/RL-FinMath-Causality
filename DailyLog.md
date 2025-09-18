@@ -17,6 +17,7 @@ Day 4 - Thursday, Septmber 18th:
 
 - Updated code to find B (the borrowed amount from the bank) as well
 - Further understanding the code and RL better
+- New goals to look for to expand search
 
 Next goals:
 
