@@ -21,3 +21,5 @@ Day 4 - Thursday, Septmber 18th:
 Next goals:
 
 - Expand model to higher periods (look into using C++)
+- Looking into other RL algos + looking into the algos that are already used for Black Scholes
+- Looking into constraints

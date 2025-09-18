@@ -9,3 +9,11 @@ Implied fair price X = Δ \* S0 + B = 15.6167
 Mean abs replication error over 1000 sims: 6.137924
 
 We can see that there are large errors which we want to reduce
+
+- In attempting to find the hedge ratio, B and fair price within the Super Replication case, we get approximately:
+  --- Final policy at S0 ---
+  Δ (mean) = -1543.1360, std = 592.3601
+  B (mean) = -1400.3784, std = 48447.3906
+  Implied fair price X = Δ \* S0 + B = -155713.9771
+
+Which is way off

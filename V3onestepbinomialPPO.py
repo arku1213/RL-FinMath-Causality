@@ -9,7 +9,7 @@ import torch.optim as optim
 import torch.nn.functional as functional
 
 # -------------------------
-# Environment: 1-step binomial
+# Environment Setup - includes setting up initial parameters and step function
 # -------------------------
 class OneStepBinomialEnv:
     def __init__(self,
