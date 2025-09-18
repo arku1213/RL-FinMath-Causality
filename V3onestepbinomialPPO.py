@@ -117,6 +117,7 @@ class PolicyNetwork(nn.Module):
 
         self.mean_Δ = nn.Linear(hidden, 1) # takes the hidden representation of size 2 and maps it to a single output value. Represents the mean of a Gaussian distribution for the hedge ratio and adjusts for an optimal Δ value.
         self.mean_B = nn.Linear(hidden, 1) # takes the hidden representation of size 2 and maps it to a single output value. Represents the mean of a Gaussian distribution for the bank position and predict the mean value for B that minimizes the replication error
+        
         self.log_std_Δ = nn.Parameter(torch.tensor(-0.5))
         self.log_std_B = nn.Parameter(torch.tensor(-0.5))
 
