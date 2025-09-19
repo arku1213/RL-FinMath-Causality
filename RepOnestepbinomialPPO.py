@@ -179,19 +179,67 @@ class ValueNetwork(nn.Module):
 
 # -------------------------
 # PPO Training routine
+
+# Policy Training: The policy is trained to choose actions that lead to a high reward. The agent explores the environment, and if a particular action results in a positive reward, the policy network is updated to be more likely to choose that action in the future.
+
+# Value Training: The value network is trained to predict the total reward the agent can expect to receive from a given state. The value network's predictions are compared to the actual rewards received, and its weights are adjusted to make its predictions more accurate.
+
+# These two networks are trained together. The value network's predictions are used to calculate the advantage, which is a key signal that tells the policy network how much better or worse an action was than expected. This makes the policy training more efficient and stable.
 # -------------------------
+
 def train_one_step_binomial_ppo(
-    episodes=2000,          # Number of interactions with the environment, each episode = one option hedging attempt
-    batch_size=64,          # Number of episodes before update
+    episodes=2000,          
+    # Number of interactions with the environment, each episode = one option hedging attempt
+    # More episodes - more chances to explore, learn from trial and error, more robust and optimal policy,
+    # Fewer episodes - not having enough time to converge on an optimal solution.
+
+    batch_size=64,          
+    # number of episodes the agent collects before it performs a training update on the neural networks.
+    # larger batch size - gradient updates more diverse, stable and reliable requires memory and can slow down the training process.
+    # smaller batch size - more frequent, but potentially noisy, updates, unstable
+
     lr_policy=3e-3,         # Updates how hedge ratio and B are chosen
     lr_value=3e-3,          # Updates how well the critic predicts payoff error
-    gamma=1.0,              # Discount factor (how much future rewards count)
-    clip_ratio=0.2,         # Controls how much the new policy can deviate from the old policy
-    ppo_epochs=10,          
-    target_kl=0.02,         
-    entropy_coef=0.1,       
-    value_coef=1.0,         # Weight for the value loss in the total update (balanced)
-    max_grad_norm=1.0,      
+    # These control the step size for the weight updates of the policy and value networks, respectively.
+    # higher learning rate - learn faster but instability, can overshoot the optimal solution, leading to a volatile policy that never converges.
+    # lower learning rate - more stable but much slower, can get stuck in a suboptimal solution and not have enough "momentum" to improve.
+
+    gamma=1.0,              
+    # Discount factor (how much future rewards count)
+    # Since episodes are single-step, gamma has no effect here. In multi-step settings, it would determine the importance of future rewards.
+    # Currently, the agent cares just as much about future rewards as it does about immediate rewards.
+    # In multi-step settings, a higher gamma (close to 1) would make the agent consider long-term rewards more, while a lower gamma (close to 0) would make it focus on immediate rewards.
+    
+    clip_ratio=0.2,         
+    # Controls how much the new policy can deviate from the old one during a single update
+    # Larger clip ratio - larger policy updates, faster learning but risk of instability 
+    # Smaller clip ratio - restricts updates, making learning more stable but slower. A very small value could prevent meaningful progress.
+
+    ppo_epochs=10,
+    # number of times the agent iterates over the same batch of data to perform updates.
+    # More epochs - more thorough learning from each batch. if too high, might overfit
+    # Fewer epochs - won't fully learn from the data it collected, leading to a less effective update and slower overall training.
+
+    target_kl=0.02,  
+    # Kullback-Leibler (KL) divergence between the old and new policies. If the divergence > 0.02  the PPO update loop stops early
+    #higher target_kl allows  new policy to deviate more from the old one before stopping. This can speed up learning but risks instability.
+    #lower target_kl forces the updates to be very small, making the learning process much more cautious and stable.       
+
+    entropy_coef=0.1,  
+    # This coefficient controls the strength of the entropy bonus, which encourages exploration.
+    #higher entropy coefficient - force the policy to be more random and exploratory, help escape local optima but might not settle on a confident, deterministic solution.
+    #lower entropy coefficient - makes the policy more focused on maximizing immediate reward, leading to less exploration. can lead to suboptimal policy.
+
+    value_coef=1.0,         
+    # This weights the value loss in the total loss function.
+    #higher value coefficient - focus more on training the value network, better accurately predict rewards, stabilize training but slower policy learning.
+    #lower value coefficient -  more emphasis on  policy updates,  speed up learning but  more instability if the value network's predictions are poor.
+
+    max_grad_norm=1.0,   
+    #This is used for gradient clipping, which prevents gradients from exploding during backpropagation.
+    #higher value - allows for larger gradients, could speed up learning but increases the risk of instability.
+    #lower value - more conservative and prevents gradients from getting too large, which can stabilize training, especially for very deep or complex networks.
+
     seed=0,
     verbose=True,
     use_market_price=False  # If true - adds an arbitrage incentive (bonus reward if replication is exact and market option price is exploitable)
@@ -209,12 +257,12 @@ def train_one_step_binomial_ppo(
                              seed=seed)
 
     obs_dim = 2  # [S_t, time_to_maturity]
-
     # Policy network outputs hedge ratio Δ and bank position B
     policy = PolicyNetwork(obs_dim)
-
     # Value network estimates expected payoff error.
     value = ValueNetwork(obs_dim)
+
+
     opt_policy = optim.Adam(policy.parameters(), lr=lr_policy)
     opt_value = optim.Adam(value.parameters(), lr=lr_value)
 

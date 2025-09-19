@@ -19,9 +19,17 @@ Day 4 - Thursday, Septmber 18th:
 - Further understanding the code and RL better
 - New goals to look for to expand search
 
+Day 5 - Friday, September 19th:
+
+- Further understanding the code
+- More objectives
+
 Next goals:
 
 - Expand model to higher periods (look into using C++)
-- Looking into other RL algos + looking into the algos that are already used for Black Scholes
+- Looking into other RL algos + looking into the algos that are already used for Black Scholes (ex. SAC, Adam Algorithm)
+- Looking into deep learning
+- Reading up on theory - such as "Deep Hedging", "Q-learning"
 - Look into simulated annealing
-- Looking into constraints
+- Looking into constraints (such as fair price has to be between 0 and 30)
+- Higher n-nomial models
