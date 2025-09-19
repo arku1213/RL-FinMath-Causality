@@ -263,25 +263,30 @@ def train_one_step_binomial_ppo(
     value = ValueNetwork(obs_dim)
 
 
-    opt_policy = optim.Adam(policy.parameters(), lr=lr_policy)
-    opt_value = optim.Adam(value.parameters(), lr=lr_value)
+    # initialize two separate optimizers. An optimizer is an algorithm that adjusts the weights of a neural network to minimize a loss function. It's the engine that drives the learning process.
+    #Weights are numerical values that represent the strength of the connections between neurons in a neural network.  They are the primary parameters that the network learns from data.
+    #The loss function (also called the cost function or objective function) is a mathematical formula that quantifies the difference between the network's predicted output and the actual target output. It essentially tells the network how "wrong" it is.
+    #Adam is a popular and efficient optimization algorithm. It adapts the learning rate for each network parameter, which often leads to faster and more stable training.
+    opt_policy = optim.Adam(policy.parameters(), lr=lr_policy) #gets all the learnable parameters (weights and biases) of the PolicyNetwork
+    opt_value = optim.Adam(value.parameters(), lr=lr_value) #gets all the learnable parameters (weights and biases) of the ValueNetwork
 
     # storage for batch
     episode_data = []
 
     # reset environment to inital state, sample hedge ratio and B, store log-prob
-    for ep in range(1, episodes + 1):
-        s = env.reset()
-        s_tensor = torch.tensor(s, dtype=torch.float32)
+    for ep in range(1, episodes + 1): #loop iterates through a specified number of episodes, each one being a single hedging attempt.
+        s = env.reset() #reset to its initial state, which includes setting the stock price and time to maturity.
+        s_tensor = torch.tensor(s, dtype=torch.float32) # convert from array to tensor (tensors are n-dimensional array of numbers for n >= 3)
         
-        # Sample action using PPO-style method
+        # gradients are derivatives and are used to understand how a neural network's loss (error) changes with respect to its weights.
+        # gradients are not tracked because only need to use the networks to make predictions
         with torch.no_grad():
-            action, old_log_prob, _ = policy.get_action_and_value(s_tensor.unsqueeze(0))
-            old_value = value(s_tensor)
+            action, old_log_prob, _ = policy.get_action_and_value(s_tensor.unsqueeze(0)) #decision-making step, uses PolicyNetwork to sample an  action (Δ and B).and gets the old_log_prob (probability of this action under the current policy) for later use.
+            old_value = value(s_tensor) # takes the same state and provides its estimate of the expected future reward (critic's value)
 
-        action_np = action.squeeze(0).numpy()  # [Δ, B]
+        action_np = action.squeeze(0).numpy()  #convert from tensor back to array
 
-        # step env
+        # chosen action is executed in the environment
         next_s, reward, done, info = env.step(action_np)
 
         # store (including old_log_prob and old_value for PPO)
