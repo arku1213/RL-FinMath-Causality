@@ -117,51 +117,65 @@ class PolicyNetwork(nn.Module):
 
         self.mean_Δ = nn.Linear(hidden, 1) # takes the hidden representation of size 2 and maps it to a single output value. Represents the mean of a Gaussian distribution for the hedge ratio and adjusts for an optimal Δ value.
         self.mean_B = nn.Linear(hidden, 1) # takes the hidden representation of size 2 and maps it to a single output value. Represents the mean of a Gaussian distribution for the bank position and predict the mean value for B that minimizes the replication error
-        
-        self.log_std_Δ = nn.Parameter(torch.tensor(-0.5))
-        self.log_std_B = nn.Parameter(torch.tensor(-0.5))
 
-    # Constructs two Gaussian distributions: one for Δ, one for B
+        # By learning the logarithm of the standard deviation, the network ensures that the actual standard deviation is always positive. The initial value of -0.5 is a common starting point that provides a reasonable initial level of exploration.
+
+        # Algorithm will update these parameters to adjust the amount of randomness in the agent's actions.
+        # Good strategy -> the standard deviations will likely decrease over time
+        # Explore more -> the standard deviations may increase.
+
+        self.log_std_Δ = nn.Parameter(torch.tensor(-0.5)) # learnable parameter that represents the logarithm of the standard deviation
+        self.log_std_B = nn.Parameter(torch.tensor(-0.5)) # learnable parameter that represents the logarithm of the standard deviation
+
+    # Tying everything together, this method defines how the input state is processed through the network to produce the parameters of the action distribution. Input state is the current stock price and time to maturity
     def forward(self, x):
-        h = self.net(x)
-        mean_Δ = self.mean_Δ(h).squeeze(-1)
-        mean_B = self.mean_B(h).squeeze(-1)
-        std_Δ = torch.exp(self.log_std_Δ)
-        std_B = torch.exp(self.log_std_B)
+        h = self.net(x) # input state (x) is passed through the shared layers to get the hidden representation (h).
+        mean_Δ = self.mean_Δ(h).squeeze(-1) # mean for Δ is calculated from h
+        mean_B = self.mean_B(h).squeeze(-1) # mean for B is calculated from h.
+        std_Δ = torch.exp(self.log_std_Δ) # standard deviation for Δ is computed by exponentiating the learnable log standard deviation parameters.
+        std_B = torch.exp(self.log_std_B) # standard deviation for B is computed by exponentiating the learnable log standard deviation parameters.
         return mean_Δ, std_Δ, mean_B, std_B
 
+    # Method for acting in the environment and updating the policy). It samples an action based on the current policy and computes the log-probability and entropy of that action.
     def get_action_and_value(self, x, action=None):
-        """PPO-style method that returns [Δ, B], log_prob, and entropy"""
+        # two Gaussian distributions and defines a range of possible actions and their probabilities
         mean_Δ, std_Δ, mean_B, std_B = self.forward(x)
         dist_Δ = torch.distributions.Normal(mean_Δ, std_Δ)
         dist_B = torch.distributions.Normal(mean_B, std_B)
 
+        # randomly samples a value for Δ from dist_Δ and a value for B from dist_B, trying out a new action
         if action is None:
             Δ = dist_Δ.sample()
             B = dist_B.sample()
         else:
             Δ, B = action[:, 0], action[:, 1]
 
-        log_prob = dist_Δ.log_prob(Δ) + dist_B.log_prob(B)
-        entropy = dist_Δ.entropy() + dist_B.entropy()
+        log_prob = dist_Δ.log_prob(Δ) + dist_B.log_prob(B) # logarithm of the probability of the chosen action under the current policy. 
+        # higher log_prob - action is more likely to be chosen by the current policy.  
+        # final log_prob = sum of individual log probabilities because Δ and B are treated as independent.
+        entropy = dist_Δ.entropy() + dist_B.entropy() # measures the randomness or unpredictability of the policy's action distribution. 
+        # high entropy - policy is highly exploratory,  
+        # low entropy - confident and deterministic. 
+        # In PPO, adding an entropy bonus to the reward can encourage the agent to explore more, which helps it avoid getting stuck in suboptimal solutions.
 
-        action = torch.stack([Δ, B], dim=-1)
+        action = torch.stack([Δ, B], dim=-1) # combines Δ and B into a single, two-element tensor representing the complete action for the agent.
         return action, log_prob, entropy
 
+# The value network's job is to predict the expected return or total future reward from a given state. It doesn't tell the agent what to do, but rather how good a situation it's in. This helps the agent evaluate its actions and make better decisions over time.
 
 class ValueNetwork(nn.Module):
     def __init__(self, obs_dim, hidden=64):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden),
-            nn.Tanh(),
-            nn.Linear(hidden, hidden),
-            nn.Tanh(),
+            nn.Linear(obs_dim, hidden), # first layer,  fully connected layer that takes the input state of size obs_dim (2) and transforms it into a hidden representation of size hidden.
+            nn.Tanh(),  # activation function, squashes the output of the linear layer to a range between -1 and 1, allowing the network to model more complex, non-linear relationships.
+            nn.Linear(hidden, hidden), # second hidden layer, takes the output from the previous layer (size hidden) and maps it to another hidden representation of the same size.
+            nn.Tanh(),  # activation function, squashes the output of the linear layer to a range between -1 and 1, allowing the network to model more complex, non-linear relationships.
             nn.Linear(hidden, 1)
         )
 
     def forward(self, x):
-        return self.net(x).squeeze(-1)
+        return self.net(x).squeeze(-1) # tensor value of the right dimension
 
 # -------------------------
 # PPO Training routine
