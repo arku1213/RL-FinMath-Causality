@@ -24,8 +24,15 @@ Day 5 - Friday, September 19th:
 - Further understanding the code
 - More objectives
 
+Day 6 - Monday, September 22nd:
+
+- Further understanding the code
+- Looking at other algos (SAC, Deep Learning, Simulated Annealing)
+- Reading up on Theor
+
 Next goals:
 
+- Try reward = (payoff - portfolio) ^2
 - Expand model to higher periods (look into using C++)
 - Looking into other RL algos + looking into the algos that are already used for Black Scholes (ex. SAC, Adam Algorithm)
 - Looking into deep learning

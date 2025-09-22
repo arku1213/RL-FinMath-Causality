@@ -300,67 +300,76 @@ def train_one_step_binomial_ppo(
             'info': info
         })
 
-        # PPO update every batch_size episodes
-        if (ep % batch_size) == 0:
-            # build tensors
+        # PPO update, takes batch of previous experience and uses to update the policy and value networks. 
+        # goal - improve the agent's strategy by making it more likely to repeat actions that led to good outcomes.
+        if (ep % batch_size) == 0: # checks if a full batch of experiences has been collected
+            # converted into PyTorch tensors for efficient computation
             states = torch.tensor(np.array([d['s'] for d in episode_data]), dtype=torch.float32)
             actions = torch.tensor(np.array([d['a'] for d in episode_data]), dtype=torch.float32)
             old_log_probs = torch.stack([d['old_log_prob'] for d in episode_data])
             old_values = torch.stack([d['old_value'] for d in episode_data])
             rewards = torch.tensor(np.array([d['r'] for d in episode_data]), dtype=torch.float32)
 
-            # compute returns and advantages (gamma=1, single-step episodes)
+            # total return from a state is simply the immediate reward (due to single-step episode and gamma = 1))
+            # positive advantage - action yielded a better reward than the ValueNetwork predicted, policy should be updated to be more likely to take this action.
+            # negative advantage - action was worse than expected, so the policy should be updated to be less likely to take it.
+            # The .detach() method is crucial here; it prevents the gradient from flowing back to the ValueNetwork, ensuring that the advantage calculation only uses the old, fixed value predictions and does not affect the value network's training.
             returns = rewards
             advantages = returns - old_values.detach()
-            
-            # normalize advantages (PPO improvement)
+
+            # normalize advantages (normalized, stabilize training by making the advantage values consistent)
             if advantages.std() > 1e-8:
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-            # PPO update loop
+            # loop performs multiple passes over the same batch of data. This allows the networks to learn more from each experience while still staying within the bounds set by the PPO algorithm.
             for ppo_epoch in range(ppo_epochs):
                 # get new policy outputs
                 _, new_log_probs, entropies = policy.get_action_and_value(states, actions)
                 new_values = value(states)
 
-                # PPO ratio
+                # importance sampling ratio - measures how much the probability of the actions in the batch has changed from the old policy to the new one. A ratio of 1 means no change.
                 ratio = torch.exp(new_log_probs - old_log_probs)
 
                 # Encourages policy to move in direction of advantage but prevents giant updates
-                surr1 = ratio * advantages
-                surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * advantages
+                surr1 = ratio * advantages # standard policy gradient objective
+                surr2 = torch.clamp(ratio, 1 - clip_ratio, 1 + clip_ratio) * advantages # clipped surrogate objective. It limits the ratio to a small range around 1. The torch.min function then chooses the smaller of the two. This ensures that the policy update is never too large, preventing the new policy from deviating too much from the old one and leading to unstable training.
+
+                # final policy loss, want to maximize the objective, so minimize the negative
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # entropy bonus (encourages exploration)
+                # entropy bonus. It's added to encourage the policy to be more exploratory (i.e., less deterministic
                 entropy_loss = -entropy_coef * entropies.mean()
 
                 # total policy loss
                 total_policy_loss = policy_loss + entropy_loss
 
-                # value loss (clipped for stability)
+                # This calculates the loss for the value network. It uses a mean squared error to compare the new value predictions to the actual returns.
+                # Clipping is used to prevent large updates to the value function, which can destabilize training.
+
                 value_pred_clipped = old_values + torch.clamp(
                     new_values - old_values, -clip_ratio, clip_ratio
                 )
+                # The value loss is scaled by value_coef to balance its importance relative to the policy
                 value_loss1 = functional.mse_loss(new_values, returns)
                 value_loss2 = functional.mse_loss(value_pred_clipped, returns)
                 value_loss = value_coef * torch.max(value_loss1, value_loss2)
 
                 # policy update
-                opt_policy.zero_grad()
-                total_policy_loss.backward()
-                torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm)
-                opt_policy.step()
+                opt_policy.zero_grad() # gradients from the previous update are reset to zero.
+                total_policy_loss.backward() # gradients for both networks are computed via backpropagation
+                torch.nn.utils.clip_grad_norm_(policy.parameters(), max_grad_norm) # gradient clipping step prevents the gradients from becoming too large, which can destabilize training.
+                opt_policy.step() # optimizers use the computed gradients to update the weights of the policy network
 
                 # value update
-                opt_value.zero_grad()
-                value_loss.backward()
-                torch.nn.utils.clip_grad_norm_(value.parameters(), max_grad_norm)
-                opt_value.step()
+                opt_value.zero_grad() # gradients from the previous update are reset to zero.
+                value_loss.backward() # gradients for both networks are computed via backpropagation
+                torch.nn.utils.clip_grad_norm_(value.parameters(), max_grad_norm) # gradient clipping step prevents the gradients from becoming too large, which can destabilize training.
+                opt_value.step() # optimizers use the computed gradients to update the weights of the value network
 
                 # early stopping based on KL divergence
                 with torch.no_grad():
-                    kl_div = (old_log_probs - new_log_probs).mean().item()
-                    if kl_div > target_kl:
+                    kl_div = (old_log_probs - new_log_probs).mean().item() # calculates the KL divergence
+                    if kl_div > target_kl: # If the new policy has deviated too much, the loop breaks early
                         break
 
             # Tracks how hedge ratio and bank position evolve over training
@@ -395,7 +404,10 @@ if __name__ == "__main__":
         use_market_price=False
     )
 
-    # inspect policy at S0
+    # After training, the code inspects the policy network at the initial state. It passes the initial state to the trained policy network to get the mean and standard deviation of its recommended actions. This shows what the agent has learned to do in its starting position.
+
+    # Fair Price Estimation: It then calculates the implied fair price of the option based on the trained agent's policy. This is the agent's learned best estimate for the option's value at the beginning of the period.
+
     s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32)
     mean_Δ, std_Δ, mean_B, std_B = pol(s0)
     mean_Δ = mean_Δ.item()
@@ -410,10 +422,11 @@ if __name__ == "__main__":
     print(f"Implied fair price X = Δ * S0 + B = {fair_price_est:.4f}")
 
     # run many sims to check replication error
-    N = 1000
+    N = 1000 # The code then performs a large number of deterministic simulations (N = 1000) to test the learned policy.
     errs = []
     for _ in range(N):
-        # sample action deterministically as mean (evaluation)
+        # It uses the mean values for Δ and B from the trained policy, ignoring the standard deviation to perform a "greedy" or deterministic action.
+        # It runs the environment's step function repeatedly and records the replication error for each simulation.
         Δ = mean_Δ
         B = mean_B
         _, _, _, info = env.step([Δ, B])
