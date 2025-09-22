@@ -1,0 +1,244 @@
+# PURE REPLICATION WITH DQN
+# Discrete action space: (Δ, B)
+# Δ ∈ [-1, 1] with 21 steps, B ∈ [-50, 50] with 21 steps
+# Total actions = 441
+
+import math
+import random
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from collections import deque
+
+# -------------------------
+# Environment: 1-step binomial
+# -------------------------
+class OneStepBinomialEnv:
+    def __init__(self,
+                 S0=100.0,     # initial stock price
+                 K=110.0,      # strike price
+                 up_price=140.0,
+                 down_price=80.0,
+                 probability=0.5,
+                 seed=0):
+        self.S0 = float(S0)
+        self.K = float(K)
+        self.up_price = float(up_price)
+        self.down_price = float(down_price)
+        self.probability = float(probability)
+        self.rng = random.Random(seed)
+        self.reset()
+
+    def reset(self):
+        self.t = 0
+        self.state = np.array([self.S0, 1.0], dtype=np.float32)  # [price, time_to_maturity]
+        return self.state
+
+    def step(self, delta, B):
+        """
+        delta: hedge ratio (float)
+        B: bank borrowing (float)
+        """
+        # stochastic move up or down
+        is_up = self.rng.random() < self.probability
+        S_T = self.up_price if is_up else self.down_price
+
+        # European call payoff
+        payoff = max(S_T - self.K, 0.0)
+
+        # portfolio value at maturity
+        portfolio = delta * S_T + B
+
+        # replication error
+        err = portfolio - payoff
+
+        # reward for replication (pure)
+        reward = -abs(err)
+
+        next_state = np.array([S_T, 0.0], dtype=np.float32)
+        done = True
+
+        info = {
+            "is_up": is_up,
+            "S_T": S_T,
+            "payoff": payoff,
+            "portfolio": portfolio,
+            "err": err
+        }
+        return next_state, reward, done, info
+
+
+# -------------------------
+# Discretization of action space
+# -------------------------
+# Δ in [-1,1] with 21 steps, B in [-50,50] with 21 steps
+deltas = np.linspace(-1.0, 1.0, 21)
+Bs = np.linspace(-50.0, 50.0, 21)
+action_space = [(d, b) for d in deltas for b in Bs]
+NUM_ACTIONS = len(action_space)  # 441
+
+
+# -------------------------
+# Q-network
+# -------------------------
+class QNet(nn.Module):
+    def __init__(self, obs_dim, hidden=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, NUM_ACTIONS)   # one Q-value per action
+        )
+
+    def forward(self, x):
+        return self.net(x)  # shape: [batch, NUM_ACTIONS]
+
+
+# -------------------------
+# Replay Buffer
+# -------------------------
+class ReplayBuffer:
+    def __init__(self, capacity=100000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        states, actions, rewards, next_states, dones = map(np.array, zip(*batch))
+        return states, actions, rewards, next_states, dones
+
+    def __len__(self):
+        return len(self.buffer)
+
+
+# -------------------------
+# DQN Training
+# -------------------------
+def train_dqn(
+    episodes=50000,
+    batch_size=64,
+    gamma=1.0,          # no discounting since it's 1-step
+    lr=1e-3,
+    epsilon_start=1.0,
+    epsilon_end=0.05,
+    epsilon_decay=5000,
+    target_update=1000,
+    buffer_capacity=100000,
+    seed=0,
+    verbose=True
+):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    env = OneStepBinomialEnv(seed=seed)
+    obs_dim = 2
+
+    qnet = QNet(obs_dim)
+    target_qnet = QNet(obs_dim)
+    target_qnet.load_state_dict(qnet.state_dict())
+
+    optimizer = optim.Adam(qnet.parameters(), lr=lr)
+    replay = ReplayBuffer(buffer_capacity)
+
+    # epsilon-greedy exploration
+    epsilon = epsilon_start
+    epsilon_decay_rate = (epsilon_start - epsilon_end) / epsilon_decay
+
+    rewards_history = []
+
+    for ep in range(1, episodes + 1):
+        state = env.reset()
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+
+        # epsilon-greedy action selection
+        if random.random() < epsilon:
+            action_idx = random.randrange(NUM_ACTIONS)
+        else:
+            with torch.no_grad():
+                q_values = qnet(state_tensor)
+                action_idx = q_values.argmax(dim=1).item()
+
+        delta, B = action_space[action_idx]
+
+        # step environment
+        next_state, reward, done, info = env.step(delta, B)
+
+        # store transition
+        replay.push(state, action_idx, reward, next_state, done)
+
+        state = next_state
+        rewards_history.append(reward)
+
+        # decay epsilon
+        if epsilon > epsilon_end:
+            epsilon -= epsilon_decay_rate
+
+        # learn if enough samples
+        if len(replay) >= batch_size:
+            states, actions, rewards, next_states, dones = replay.sample(batch_size)
+
+            states_tensor = torch.tensor(states, dtype=torch.float32)
+            actions_tensor = torch.tensor(actions, dtype=torch.int64)
+            rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
+            next_states_tensor = torch.tensor(next_states, dtype=torch.float32)
+            dones_tensor = torch.tensor(dones, dtype=torch.float32)
+
+            # current Q estimates
+            q_values = qnet(states_tensor).gather(1, actions_tensor.unsqueeze(1)).squeeze(1)
+
+            # target Q
+            with torch.no_grad():
+                next_q_values = target_qnet(next_states_tensor).max(dim=1)[0]
+                targets = rewards_tensor + gamma * (1 - dones_tensor) * next_q_values
+
+            loss = F.mse_loss(q_values, targets)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # update target network
+        if ep % target_update == 0:
+            target_qnet.load_state_dict(qnet.state_dict())
+
+        # logging
+        if verbose and ep % 5000 == 0:
+            mean_r = np.mean(rewards_history[-5000:])
+            print(f"Episode {ep}, mean reward (last 5000): {mean_r:.4f}, epsilon={epsilon:.3f}")
+
+    return qnet, env
+
+
+# -------------------------
+# Evaluation
+# -------------------------
+if __name__ == "__main__":
+    qnet, env = train_dqn(episodes=100000, seed=42, verbose=True)
+
+    # Evaluate best action at S0
+    s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32).unsqueeze(0)
+    with torch.no_grad():
+        q_values = qnet(s0)
+        best_idx = q_values.argmax(dim=1).item()
+
+    delta, B = action_space[best_idx]
+    fair_price_est = delta * env.S0 + B
+
+    print("\n--- Final policy at S0 ---")
+    print(f"Δ = {delta:.4f}, B = {B:.4f}")
+    print(f"Implied fair price X = Δ * S0 + B = {fair_price_est:.4f}")
+
+    # Replication error test
+    N = 1000
+    errs = []
+    for _ in range(N):
+        _, _, _, info = env.step(delta, B)
+        errs.append(info["err"])
+    print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
