@@ -63,3 +63,13 @@ Super Replication DQN:
 Δ = 0.0000, B = 30.0000
 Implied fair price X = Δ \* S0 + B = 30.0000
 Mean abs replication error over 1000 sims: 14.400000
+
+Replication Simulated Annealing:
+Δ = 0.5471, B = -43.7779, implied fair price = 10.9356
+L2 replication error = 0.000050
+
+Super Replication Simulated Annealing:
+Best Δ = 0.6435
+Best B = 17.3458
+Implied fair price X = Δ \* S0 + B = 81.6961
+Best reward (negative shortfall) = -0.000000
