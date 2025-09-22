@@ -188,12 +188,12 @@ class ValueNetwork(nn.Module):
 # -------------------------
 
 def train_one_step_binomial_ppo(
-    episodes=2000,          
+    episodes=800000,          
     # Number of interactions with the environment, each episode = one option hedging attempt
     # More episodes - more chances to explore, learn from trial and error, more robust and optimal policy,
     # Fewer episodes - not having enough time to converge on an optimal solution.
 
-    batch_size=64,          
+    batch_size=128,          
     # number of episodes the agent collects before it performs a training update on the neural networks.
     # larger batch size - gradient updates more diverse, stable and reliable requires memory and can slow down the training process.
     # smaller batch size - more frequent, but potentially noisy, updates, unstable
@@ -434,3 +434,18 @@ if __name__ == "__main__":
 
     errs = np.array(errs)
     print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
+
+# --------------------------
+#The agent observes the initial financial state.
+
+#It uses its policy network to choose a hedging strategy (Δ and B).
+
+#The environment calculates the result of that strategy (the replication error and reward).
+
+#The agent collects this experience.
+
+#After collecting a batch of experiences, it uses a PPO algorithm to analyze them and update the policy and value networks, learning from its mistakes.
+
+#This loop repeats hundreds of thousands of times until the agent's policy network consistently chooses the optimal Δ and B values that result in a replication error very close to zero.
+
+#Finally, the code tests the trained agent by running a large number of simulations to confirm that the learned strategy is, in fact, an effective and robust hedge.
