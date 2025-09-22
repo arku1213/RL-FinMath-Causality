@@ -38,3 +38,10 @@ Replication case: After applying the previous changes and changing the clip rati
 B (mean) = -40.1619, std = 1.2907
 Implied fair price X = Δ \* S0 + B = 10.2050
 Mean abs replication error over 1000 sims: 0.234253
+
+Super-Replication case: Same parameters:
+--- Final policy at S0 ---
+Δ (mean) = 0.5068, std = 0.0128
+B (mean) = -38.9966, std = 1.2753
+Implied fair price X = Δ \* S0 + B = 11.6875
+Mean abs replication error over 1000 sims: 1.741995
