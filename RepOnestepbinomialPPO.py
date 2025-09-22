@@ -62,7 +62,7 @@ class OneStepBinomialEnv:
 
         err = portfolio - payoff # The error is the  difference between the final portfolio value and the option's payoff. The  agent's goal is to find the values for the hedge ratio Δ and bank position B that minimize this error.
 
-        reward = -abs(err) # The reward incentivizes the agent to choose an action (Δ and B) that makes the portfolio value at maturity as close as possible to the option's payoff. A smaller error results in a higher (less negative) reward.
+        reward = -(err**2) # The reward incentivizes the agent to choose an action (Δ and B) that makes the portfolio value at maturity as close as possible to the option's payoff. A smaller error results in a higher (less negative) reward.
 
         # optional arbitrage bonus
         arbitrage_bonus = 0.0
@@ -198,8 +198,8 @@ def train_one_step_binomial_ppo(
     # larger batch size - gradient updates more diverse, stable and reliable requires memory and can slow down the training process.
     # smaller batch size - more frequent, but potentially noisy, updates, unstable
 
-    lr_policy=3e-3,         # Updates how hedge ratio and B are chosen
-    lr_value=3e-3,          # Updates how well the critic predicts payoff error
+    lr_policy=1e-4,         # Updates how hedge ratio and B are chosen
+    lr_value=1e-4,          # Updates how well the critic predicts payoff error
     # These control the step size for the weight updates of the policy and value networks, respectively.
     # higher learning rate - learn faster but instability, can overshoot the optimal solution, leading to a volatile policy that never converges.
     # lower learning rate - more stable but much slower, can get stuck in a suboptimal solution and not have enough "momentum" to improve.
@@ -210,12 +210,12 @@ def train_one_step_binomial_ppo(
     # Currently, the agent cares just as much about future rewards as it does about immediate rewards.
     # In multi-step settings, a higher gamma (close to 1) would make the agent consider long-term rewards more, while a lower gamma (close to 0) would make it focus on immediate rewards.
     
-    clip_ratio=0.2,         
+    clip_ratio=0.1,         
     # Controls how much the new policy can deviate from the old one during a single update
     # Larger clip ratio - larger policy updates, faster learning but risk of instability 
     # Smaller clip ratio - restricts updates, making learning more stable but slower. A very small value could prevent meaningful progress.
 
-    ppo_epochs=10,
+    ppo_epochs=15,
     # number of times the agent iterates over the same batch of data to perform updates.
     # More epochs - more thorough learning from each batch. if too high, might overfit
     # Fewer epochs - won't fully learn from the data it collected, leading to a less effective update and slower overall training.
@@ -225,7 +225,7 @@ def train_one_step_binomial_ppo(
     #higher target_kl allows  new policy to deviate more from the old one before stopping. This can speed up learning but risks instability.
     #lower target_kl forces the updates to be very small, making the learning process much more cautious and stable.       
 
-    entropy_coef=0.1,  
+    entropy_coef=0.01,  
     # This coefficient controls the strength of the entropy bonus, which encourages exploration.
     #higher entropy coefficient - force the policy to be more random and exploratory, help escape local optima but might not settle on a confident, deterministic solution.
     #lower entropy coefficient - makes the policy more focused on maximizing immediate reward, leading to less exploration. can lead to suboptimal policy.
@@ -397,8 +397,8 @@ def train_one_step_binomial_ppo(
 if __name__ == "__main__":
     # train for a small experiment
     pol, val, env = train_one_step_binomial_ppo(
-        episodes= 800000,
-        batch_size= 128,
+        episodes= 2000000,
+        batch_size= 256,
         seed=42,
         verbose=True,
         use_market_price=False

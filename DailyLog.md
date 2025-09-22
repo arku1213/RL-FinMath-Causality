@@ -27,8 +27,9 @@ Day 5 - Friday, September 19th:
 Day 6 - Monday, September 22nd:
 
 - Further understanding the code
+- Changed -(abs(err)) to -(err^2)
 - Looking at other algos (SAC, Deep Learning, Simulated Annealing)
-- Reading up on Theor
+- Reading up on Theory
 
 Next goals:
 

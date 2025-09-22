@@ -17,3 +17,24 @@ We can see that there are large errors which we want to reduce
   Implied fair price X = Δ \* S0 + B = -155713.9771
 
 Which is way off
+
+Replication case: After changing to 1.5 million episodes, updating to batch size of 256 and decreasing entropy and policy and values, we get
+--- Final policy at S0 ---
+Δ (mean) = 0.4960, std = 0.0259
+B (mean) = -39.9756, std = 2.3143
+Implied fair price X = Δ \* S0 + B = 9.6260
+Mean abs replication error over 1000 sims: 0.412213
+
+Replication case: After changing to 2 million episodes, and max number of epochs to 15, we get
+--- Final policy at S0 ---
+Δ (mean) = 0.4971, std = 0.0130
+B (mean) = -40.2649, std = 1.2056
+Implied fair price X = Δ \* S0 + B = 9.4444
+Mean abs replication error over 1000 sims: 0.578795
+
+Replication case: After applying the previous changes and changing the clip ratio to 0.1, we get
+--- Final policy at S0 ---
+Δ (mean) = 0.5037, std = 0.0131
+B (mean) = -40.1619, std = 1.2907
+Implied fair price X = Δ \* S0 + B = 10.2050
+Mean abs replication error over 1000 sims: 0.234253
