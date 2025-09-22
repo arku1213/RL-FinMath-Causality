@@ -45,3 +45,21 @@ Super-Replication case: Same parameters:
 B (mean) = -38.9966, std = 1.2753
 Implied fair price X = Δ \* S0 + B = 11.6875
 Mean abs replication error over 1000 sims: 1.741995
+
+Replication DQN:
+--- Final policy at S0 ---
+Δ = 0.5000, B = -40.0000
+Implied fair price X = Δ \* S0 + B = 10.0000
+Mean abs replication error over 1000 sims: 0.000000
+
+DQN gets perfect results for one step because:
+
+- State space is tiny: [S0, t=1].
+- Action space is manageable: Δ ∈ [-1,1] in 21 steps, B ∈ [-50,50] in 21 steps → 441 discrete actions.
+- finds exact minimizer of squared error.
+
+Super Replication DQN:
+--- Final policy at S0 ---
+Δ = 0.0000, B = 30.0000
+Implied fair price X = Δ \* S0 + B = 30.0000
+Mean abs replication error over 1000 sims: 14.400000
