@@ -18,6 +18,8 @@ We can see that there are large errors which we want to reduce
 
 Which is way off
 
+################################################################################################################################
+
 Replication case: After changing to 1.5 million episodes, updating to batch size of 256 and decreasing entropy and policy and values, we get
 --- Final policy at S0 ---
 Δ (mean) = 0.4960, std = 0.0259
@@ -57,6 +59,15 @@ DQN gets perfect results for one step because:
 - State space is tiny: [S0, t=1].
 - Action space is manageable: Δ ∈ [-1,1] in 21 steps, B ∈ [-50,50] in 21 steps → 441 discrete actions.
 - finds exact minimizer of squared error.
+
+################################################################################################################################
+
+Replication SAC:
+Final Policy:
+Delta: 1.0000
+B: -95.5414
+Fair Price: 4.4586
+Delta is properly constrained in [0,1]: True
 
 Super Replication DQN:
 --- Final policy at S0 ---
