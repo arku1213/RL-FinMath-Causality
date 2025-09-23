@@ -41,3 +41,17 @@ DQN gets perfect results for one step because:
 - finds exact minimizer of squared error.
 
 ################################################################################################################################
+
+Your DQN uses discretized action grids (you asked earlier to discretize Δ into 21 steps and B into 21 steps). That means the agent can only choose values on the grid, not any real number. Typical grids you used:
+
+Δ grid: 21 values between −1 and 1 → step = 2/20 = 0.1 → Δ ∈ {−1.0, −0.9, ..., 0.4, 0.5, ...}
+
+B grid: 21 values between −50 and 50 → step = 100/20 = 5 → B ∈ {−50, −45, −40, −35, ...}
+
+The true analytic solution Δ ≈ 0.4737 and B ≈ −37.8947 are not exactly on that grid. The nearest grid points are roughly:
+
+nearest Δ grid ≈ 0.5
+
+nearest B grid ≈ −40 (or maybe −35 depending rounding; −40 is closer)
+
+So the best discrete action available to DQN is (Δ=0.5, B=−40). DQN learned that and picked it deterministically at evaluation.
