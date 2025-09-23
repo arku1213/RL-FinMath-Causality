@@ -30,9 +30,14 @@ Day 6 - Monday, September 22nd:
 - Changed -(abs(err)) to -(err^2)
 - Looking at other algos (SAC, Deep Learning, Simulated Annealing)
 
+Day 7 - Tuesday, September 23rd:
+
+- Discussed Objectives - decided to look deeply into DQN as PPO is too slow, don't worry about SAC and SA
+- Look into DQN, especially for Trinomial Model (1-step)
+
 Next goals:
 
-- Looking into other RL algos + looking into the algos that are already used for Black Scholes
+- Look into algos that are already used for Black Scholes
 - Reading up on theory - such as "Deep Hedging", "Q-learning"
 - Looking into constraints (such as fair price has to be between 0 and 30)
 - Expand model to higher periods (look into using C++)
