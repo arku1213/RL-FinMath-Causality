@@ -3,7 +3,6 @@
 # Δ ∈ [-1, 1] with 21 steps, B ∈ [-50, 50] with 21 steps
 # Total actions = 441
 
-import math
 import random
 import numpy as np
 import torch
@@ -15,30 +14,25 @@ from collections import deque
 # -------------------------
 # Environment: 1-step binomial
 # -------------------------
-# -------------------------
-# Environment: 1-step binomial with weighted reward
-# -------------------------
 class OneStepBinomialEnv:
     def __init__(self,
-                 S0=100.0,     # initial stock price
-                 K=110.0,      # strike price
+                 S0=100.0,
+                 K=110.0,
                  up_price=140.0,
                  down_price=80.0,
                  probability=0.5,
-                 lambda_=1.0,  # weighting between replication vs super-replication
                  seed=0):
         self.S0 = float(S0)
         self.K = float(K)
         self.up_price = float(up_price)
         self.down_price = float(down_price)
         self.probability = float(probability)
-        self.lambda_ = lambda_   # <-- store lambda
         self.rng = random.Random(seed)
         self.reset()
 
     def reset(self):
         self.t = 0
-        self.state = np.array([self.S0, 1.0], dtype=np.float32)  # [price, time_to_maturity]
+        self.state = np.array([self.S0, 1.0], dtype=np.float32)
         return self.state
 
     def step(self, delta, B):
@@ -55,18 +49,15 @@ class OneStepBinomialEnv:
         # replication metrics
         err = portfolio - payoff
         shortfall = max(0.0, payoff - portfolio)
-        cost = delta * self.S0 + B  # initial portfolio cost
+        cost = delta * self.S0 + B
 
-        # A better reward function for super-replication
-        # In this function, the goal is to minimize the cost (maximize -cost).
-        # A large penalty is only applied if the portfolio value is less than the option payoff.
-        shortfall_penalty = max(0, payoff - portfolio)
-        if shortfall_penalty > 0:
-            # Use a fixed, large penalty
-            reward = -1000.0
-        else:
-            # The reward is the negative of the initial cost
-            reward = -cost
+        # REVISED REWARD FUNCTION WITH L2 ERROR
+        # Penalizes shortfall most, then L2 error, and finally cost.
+        w1 = 1000.0  # Weight for shortfall penalty (must be high)
+        w2 = 1.0     # Weight for L2 error penalty
+        w3 = 1.0     # Weight for cost penalty
+
+        reward = -(w1 * shortfall + w2 * (err**2) + w3 * cost)
 
         # next state
         next_state = np.array([S_T, 0.0], dtype=np.float32)
@@ -87,12 +78,10 @@ class OneStepBinomialEnv:
 # -------------------------
 # Discretization of action space
 # -------------------------
-# Δ in [-1,1] with 21 steps, B in [-50,50] with 21 steps
 deltas = np.linspace(-1.0, 1.0, 21)
 Bs = np.linspace(-50.0, 50.0, 21)
 action_space = [(d, b) for d in deltas for b in Bs]
-NUM_ACTIONS = len(action_space)  # 441
-
+NUM_ACTIONS = len(action_space)
 
 # -------------------------
 # Q-network
@@ -105,12 +94,11 @@ class QNet(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
-            nn.Linear(hidden, NUM_ACTIONS)   # one Q-value per action
+            nn.Linear(hidden, NUM_ACTIONS)
         )
 
     def forward(self, x):
-        return self.net(x)  # shape: [batch, NUM_ACTIONS]
-
+        return self.net(x)
 
 # -------------------------
 # Replay Buffer
@@ -130,30 +118,27 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
-
 # -------------------------
 # DQN Training
 # -------------------------
 def train_dqn(
-    episodes=50000,
+    episodes=200000,
     batch_size=64,
     gamma=1.0,
-    lr=1e-4,
+    lr=5e-4,
     epsilon_start=1.0,
     epsilon_end=0.01,
-    epsilon_decay=5000,
+    epsilon_decay=20000,
     target_update=1000,
     buffer_capacity=100000,
     seed=0,
-    lambda_=1.0,       # <-- new argument
     verbose=True
 ):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    # pass lambda_ to environment
-    env = OneStepBinomialEnv(seed=seed, lambda_=lambda_)
+    env = OneStepBinomialEnv(seed=seed)
     obs_dim = 2
 
     qnet = QNet(obs_dim)
@@ -181,12 +166,9 @@ def train_dqn(
 
         delta, B = action_space[action_idx]
 
-        # step environment (uses lambda_ internally)
         next_state, reward, done, info = env.step(delta, B)
-
         replay.push(state, action_idx, reward, next_state, done)
 
-        state = next_state
         rewards_history.append(reward)
 
         if epsilon > epsilon_end:
@@ -226,9 +208,8 @@ def train_dqn(
 # Evaluation
 # -------------------------
 if __name__ == "__main__":
-    qnet, env = train_dqn(episodes=100000, lambda_=1.0, seed=42, verbose=True)
+    qnet, env = train_dqn(seed=42)
 
-    # Evaluate best action at S0
     s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         q_values = qnet(s0)
@@ -241,8 +222,6 @@ if __name__ == "__main__":
     print(f"Δ = {delta:.4f}, B = {B:.4f}")
     print(f"Implied fair price X = Δ * S0 + B = {fair_price_est:.4f}")
 
-    # Replication error test
-    # Extended evaluation
     N = 1000
     errs, shortfalls, costs = [], [], []
     for _ in range(N):
@@ -254,4 +233,3 @@ if __name__ == "__main__":
     print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
     print(f"Mean shortfall: {np.mean(shortfalls):.4f}")
     print(f"Mean cost: {np.mean(costs):.4f}")
-
