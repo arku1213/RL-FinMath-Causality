@@ -230,16 +230,19 @@ def train_dqn(
 # -------------------------
 # Evaluation
 # -------------------------
+# -------------------------
+# Evaluation
+# -------------------------
 if __name__ == "__main__":
-    # --- Example 1: Static Binomial Model ---
-    # To run our original binomial example (prices 80 and 140),
-    # use the following parameters. The fair price should be 10.
-    print("--- Running Model (Prices: possible_prices) ---")
+    # --- Example: Static Trinomial Model ---
+    possible_prices_list = [80.0, 110.0, 140.0]
+    probabilities_list = [0.33, 0.34, 0.33]
+    print(f"--- Running Model (Prices: {possible_prices_list}) ---")
     qnet_static, env_static = train_dqn(
         episodes=200000,
         verbose=True,
-        possible_prices=[80.0, 110.0, 140.0],
-        probabilities=[0.33, 0.34, 0.33]
+        possible_prices=possible_prices_list,
+        probabilities=probabilities_list
     )
     s0_static = torch.tensor([env_static.S0, 1.0], dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
