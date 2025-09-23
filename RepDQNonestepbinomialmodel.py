@@ -55,7 +55,7 @@ class OneStepBinomialEnv:
         err = portfolio - payoff
 
         # reward for replication (pure)
-        reward = -abs(err)
+        reward = -(err ** 2)
 
         next_state = np.array([S_T, 0.0], dtype=np.float32)
         done = True
