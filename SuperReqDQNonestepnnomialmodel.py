@@ -1,5 +1,4 @@
-# SUPER REPLICATION WITH DQN
-# One-step trinomial model
+# GENERAL N-NOMIAL SUPER REPLICATION WITH DQN
 # Discrete action space: (Δ, B)
 # Δ ∈ [-1, 1] with 21 steps, B ∈ [-50, 50] with 21 steps
 # Total actions = 441
@@ -13,28 +12,47 @@ import torch.nn.functional as F
 from collections import deque
 
 # -------------------------
-# Environment: 1-step trinomial
+# Environment: 1-step N-nomial
 # -------------------------
-class OneStepTrinomialEnv:
+class OneStepNnomialEnv:
     def __init__(self,
                  S0=100.0,
                  K=110.0,
-                 up_price=140.0,
-                 mid_price=100.0,
-                 down_price=80.0,
-                 up_prob=0.33,
-                 mid_prob=0.34,
-                 down_prob=0.33,
+                 possible_prices = [80.0, 140.0], # change this
+                 probabilities= [0.5, 0.5],     # change this
+                 price_range=50,
+                 n=2, #make sure to specifiy
                  seed=0):
+        """
+        Initializes the environment for a 1-step n-nomial model.
+        Args:
+            S0 (float): The initial stock price.
+            K (float): The strike price of the option.
+            possible_prices (list): Optional list of specific prices for each outcome.
+            probabilities (list): Optional list of probabilities for each outcome.
+            price_range (float): The range for dynamic price generation (used if possible_prices is None).
+            n (int): The number of possible outcomes for dynamic generation.
+        """
         self.S0 = float(S0)
         self.K = float(K)
-        self.up_price = float(up_price)
-        self.mid_price = float(mid_price)
-        self.down_price = float(down_price)
-        self.up_prob = float(up_prob)
-        self.mid_prob = float(mid_prob)
-        self.down_prob = float(down_prob)
         self.rng = random.Random(seed)
+
+        if possible_prices is not None and probabilities is not None:
+            self.possible_prices = np.array(possible_prices, dtype=np.float32)
+            self.probabilities = np.array(probabilities, dtype=np.float32)
+            self.n = len(possible_prices)
+        else:
+            # Dynamically create n discrete prices and probabilities
+            if n <= 1:
+                raise ValueError("n must be 2 or greater for a multi-outcome model.")
+            self.n = n
+            self.possible_prices = np.linspace(S0 - price_range, S0 + price_range, self.n)
+            # We assume equal probability for simplicity
+            self.probabilities = np.ones(self.n) / self.n
+        
+        # Calculate the payoff for each possible price
+        self.payoffs = np.maximum(self.possible_prices - self.K, 0.0)
+
         self.reset()
 
     def reset(self):
@@ -43,16 +61,9 @@ class OneStepTrinomialEnv:
         return self.state
 
     def step(self, delta, B):
-        # Choose one of the three outcomes
-        outcome = self.rng.choices(['up', 'mid', 'down'], weights=[self.up_prob, self.mid_prob, self.down_prob], k=1)[0]
+        # Choose one of the n outcomes based on probabilities
+        S_T = self.rng.choices(self.possible_prices, weights=self.probabilities, k=1)[0]
         
-        if outcome == 'up':
-            S_T = self.up_price
-        elif outcome == 'mid':
-            S_T = self.mid_price
-        else: # outcome == 'down'
-            S_T = self.down_price
-
         # Option payoff
         payoff = max(S_T - self.K, 0.0)
 
@@ -142,13 +153,15 @@ def train_dqn(
     target_update=1000,
     buffer_capacity=100000,
     seed=0,
-    verbose=True
+    verbose=True,
+    **env_params
 ):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
 
-    env = OneStepTrinomialEnv(seed=seed)
+    # Instantiate the general n-nomial environment
+    env = OneStepNnomialEnv(**env_params, seed=seed)
     obs_dim = 2
 
     qnet = QNet(obs_dim)
@@ -218,28 +231,33 @@ def train_dqn(
 # Evaluation
 # -------------------------
 if __name__ == "__main__":
-    qnet, env = train_dqn(seed=42)
-
-    s0 = torch.tensor([env.S0, 1.0], dtype=torch.float32).unsqueeze(0)
+    # --- Example 1: Static Binomial Model ---
+    # To run our original binomial example (prices 80 and 140),
+    # use the following parameters. The fair price should be 10.
+    print("--- Running Model (Prices: possible_prices) ---")
+    qnet_static, env_static = train_dqn(
+        episodes=200000,
+        verbose=True,
+        possible_prices=[80.0, 110.0, 140.0],
+        probabilities=[0.33, 0.34, 0.33]
+    )
+    s0_static = torch.tensor([env_static.S0, 1.0], dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        q_values = qnet(s0)
-        best_idx = q_values.argmax(dim=1).item()
-
-    delta, B = action_space[best_idx]
-    fair_price_est = delta * env.S0 + B
-
+        q_values_static = qnet_static(s0_static)
+        best_idx_static = q_values_static.argmax(dim=1).item()
+    delta_static, B_static = action_space[best_idx_static]
+    fair_price_static = delta_static * env_static.S0 + B_static
     print("\n--- Final policy at S0 ---")
-    print(f"Δ = {delta:.4f}, B = {B:.4f}")
-    print(f"Implied fair price X = Δ * S0 + B = {fair_price_est:.4f}")
-
+    print(f"Δ = {delta_static:.4f}, B = {B_static:.4f}")
+    print(f"Implied fair price X = Δ * S0 + B = {fair_price_static:.4f}")
     N = 1000
-    errs, shortfalls, costs = [], [], []
+    errs_static, shortfalls_static, costs_static = [], [], []
     for _ in range(N):
-        _, _, _, info = env.step(delta, B)
-        errs.append(info["err"])
-        shortfalls.append(info["shortfall"])
-        costs.append(info["cost"])
+        _, _, _, info = env_static.step(delta_static, B_static)
+        errs_static.append(info["err"])
+        shortfalls_static.append(info["shortfall"])
+        costs_static.append(info["cost"])
+    print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs_static)):.6f}")
+    print(f"Mean shortfall: {np.mean(shortfalls_static):.4f}")
+    print(f"Mean cost: {np.mean(costs_static):.4f}")
 
-    print(f"Mean abs replication error over {N} sims: {np.mean(np.abs(errs)):.6f}")
-    print(f"Mean shortfall: {np.mean(shortfalls):.4f}")
-    print(f"Mean cost: {np.mean(costs):.4f}")
