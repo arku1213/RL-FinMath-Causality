@@ -19,7 +19,7 @@ class OneStepBinomialEnv:
     def __init__(self,
                  S0=100.0,     # initial stock price
                  K=110.0,      # strike price
-                 up_price=140.0,
+                 up_price=137.0,
                  down_price=80.0,
                  probability=0.5,
                  seed=0):
