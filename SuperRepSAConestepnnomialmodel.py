@@ -646,7 +646,7 @@ if __name__ == "__main__":
         S0=100.0,
         K=110.0,
         prices=[80.0, 100.0, 140.0],  # Down, middle, up
-        probabilities=[0.25, 0.5, 0.25],  # Custom probabilities
+        probabilities=[0.33, 0.34, 0.33],  # Custom probabilities
         seed=42
     )
     
