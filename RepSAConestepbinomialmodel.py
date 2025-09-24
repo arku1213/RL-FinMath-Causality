@@ -11,7 +11,7 @@ import torch.nn.functional as F
 
 # environment (same as before)
 class OneStepBinomialEnv:
-    def __init__(self, S0=100., K=110., up_price=140., down_price=80., probability=0.5, seed=0):
+    def __init__(self, S0=100., K=110., up_price=140.0, down_price=80.0, probability=0.5, seed=0):
         self.S0 = float(S0)
         self.K = float(K)
         self.up_price = float(up_price)
