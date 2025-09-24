@@ -79,7 +79,7 @@ class DQNAgent:
         model.add(Dense(self.hidden_units, activation='relu'))
         model.add(Dense(self.hidden_units, activation='relu'))
         model.add(Dense(self.action_size, activation='linear'))  # outputs delta and B
-        model.compile(optimizer=Adam(lr=self.lr), loss='mse')
+        model.compile(optimizer=Adam(learning_rate=self.lr), loss='mse')
         return model
     
     def remember(self, state, action, reward, next_state, done):
