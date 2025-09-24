@@ -39,6 +39,7 @@ Day 8 - Wednesday, September 24th:
 
 - Reading into DQN
 - Making n-nomial model
+- DQN is discrete, want continuous - look back into SAC, DDPG, TD3 & MCPG
 
 Next goals:
 
@@ -46,3 +47,4 @@ Next goals:
 - Expand model to higher periods (look into using C++)
 - Look backwards
 - "Curse of Dimensionality"
+- https://arxiv.org/pdf/2504.05521
