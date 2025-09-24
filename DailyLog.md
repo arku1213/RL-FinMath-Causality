@@ -35,12 +35,14 @@ Day 7 - Tuesday, September 23rd:
 - Discussed Objectives - decided to look deeply into DQN as PPO is too slow, don't worry about SAC and SA
 - Looked into DQN for Trinomial Model (1-step) and n-nomial Model (1-step)
 
+Day 8 - Wednesday, September 24th:
+
+- Reading into DQN
+- Making n-nomial model
+
 Next goals:
 
 - Look into algos that are already used for Black Scholes
-- Reading up on theory - such as "Deep Hedging", "Q-learning"
-- Looking into constraints (such as fair price has to be between 0 and 30)
 - Expand model to higher periods (look into using C++)
-- Higher n-nomial models
 - Look backwards
 - "Curse of Dimensionality"
