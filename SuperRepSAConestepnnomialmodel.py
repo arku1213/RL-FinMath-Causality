@@ -1,6 +1,5 @@
 """
 SAC (Soft Actor-Critic) for One-Step N-nomial Option Hedging
-Hedging a European call option with n possible price outcomes
 """
 
 import math

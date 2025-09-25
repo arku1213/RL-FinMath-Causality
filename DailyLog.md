@@ -41,10 +41,12 @@ Day 8 - Wednesday, September 24th:
 - Making n-nomial model
 - DQN is discrete, want continuous - look back into SAC, DDPG, TD3 & MCPG
 
+Day 9 - Thursday, September 25th:
+
+- Focusing on SAC for n-nomial model case
+
 Next goals:
 
-- Look into algos that are already used for Black Scholes
 - Expand model to higher periods (look into using C++)
-- Look backwards
 - "Curse of Dimensionality"
 - https://arxiv.org/pdf/2504.05521
