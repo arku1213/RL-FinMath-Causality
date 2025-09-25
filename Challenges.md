@@ -55,3 +55,6 @@ nearest Δ grid ≈ 0.5
 nearest B grid ≈ −40 (or maybe −35 depending rounding; −40 is closer)
 
 So the best discrete action available to DQN is (Δ=0.5, B=−40). DQN learned that and picked it deterministically at evaluation.
+
+################################################################################################################################
+RL struggles with single-step problems
