@@ -44,6 +44,8 @@ Day 8 - Wednesday, September 24th:
 Day 9 - Thursday, September 25th:
 
 - Focusing on SAC for n-nomial model case
+- Determined that one step n-nomial would be tricky
+- Moved onto multi-step n-nomial for SAC, TD3, PPO & DDPG -> SAC is the best
 
 Next goals:
 
