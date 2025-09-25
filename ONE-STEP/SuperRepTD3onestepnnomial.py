@@ -168,7 +168,7 @@ class Actor(nn.Module):
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Initialize weights with Xavier/Glorot initialization + strategic bias."""
+        """Initialize weights with Xavier/Glorot initialization - NO BIAS."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
@@ -178,12 +178,7 @@ class Actor(nn.Module):
         # Initialize final layer with smaller weights for stability
         final_layer = self.network[-1]
         nn.init.uniform_(final_layer.weight, -1e-3, 1e-3)
-        
-        # Strategic bias initialization for faster convergence
-        # For delta: sigmoid^(-1)(0.5) ≈ 0, so bias of 0 gives starting delta ≈ 0.5
-        final_layer.bias[0].data.fill_(0.0)  # Delta starts around 0.5
-        # For B: we want B ≈ -40, so solve: -10 + 60*tanh(x) = -40 → tanh(x) = -0.5 → x ≈ -0.55
-        final_layer.bias[1].data.fill_(-0.55)  # B starts around -40
+        nn.init.zeros_(final_layer.bias)  # Zero bias - no theoretical knowledge
     
     def forward(self, state: torch.Tensor) -> torch.Tensor:
         """Forward pass with appropriate action constraints."""
