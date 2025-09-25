@@ -3,6 +3,7 @@ Multi-Step SAC (Soft Actor-Critic) for N-nomial Option Hedging
 Perfect Market: No interest rates, no transaction costs
 Configurable time steps and n-nomial outcomes
 Completely unbiased implementation with entropy regularization
+FIXED: Removed BatchNorm to avoid single-sample training issues
 """
 
 import math
@@ -15,8 +16,13 @@ import torch.optim as optim
 import torch.nn.functional as F
 from typing import List, Tuple, Optional, Dict
 
+# Set random seeds for reproducibility
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+
 # -------------------------
-# Multi-Step N-nomial Environment (same as DDPG/TD3)
+# Multi-Step N-nomial Environment
 # -------------------------
 class MultiStepNnomialEnv:
     """Multi-step N-nomial environment for dynamic option hedging."""
@@ -99,7 +105,7 @@ class MultiStepNnomialEnv:
             
             # Intermediate reward: negative rebalancing cost
             position_change = abs(delta - getattr(self, 'previous_delta', 0.5))
-            rebalancing_cost = -0.01 * position_change
+            rebalancing_cost = -0.001 * position_change  # Reduced cost
             reward = rebalancing_cost
             
             # Store previous delta for next step
@@ -133,7 +139,7 @@ class MultiStepNnomialEnv:
             hedging_error = final_portfolio - option_payoff
             
             # Terminal reward: negative squared hedging error (scaled)
-            reward = -(hedging_error ** 2) / 1000.0
+            reward = -(hedging_error ** 2) / 100.0  # Scaled for better learning
             
             # Terminal state (all zeros to indicate episode end)
             next_state = np.zeros(self.state_dim, dtype=np.float32)
@@ -171,7 +177,7 @@ class MultiStepNnomialEnv:
 
 
 # -------------------------
-# Replay Buffer (same as others)
+# Replay Buffer
 # -------------------------
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
 
@@ -202,27 +208,26 @@ class ReplayBuffer:
 
 
 # -------------------------
-# SAC Networks
+# SAC Networks (Fixed - No BatchNorm)
 # -------------------------
 LOG_STD_MIN = -20
 LOG_STD_MAX = 2
 EPS = 1e-6
 
 class QNetwork(nn.Module):
-    """Q-value network for SAC (twin networks)."""
+    """Q-value network for SAC (twin networks) - No BatchNorm."""
     def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256]):
         super().__init__()
         
         input_dim = obs_dim + act_dim
         
-        # Build network
+        # Build network without BatchNorm
         layers = []
         prev_dim = input_dim
         
-        for i, hidden_dim in enumerate(hidden_dims):
+        for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            if i == 0:  # Batch norm on first layer only
-                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))  # LayerNorm instead of BatchNorm
             layers.append(nn.ReLU())
             prev_dim = hidden_dim
         
@@ -235,7 +240,7 @@ class QNetwork(nn.Module):
         """Initialize weights without bias."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, gain=0.1)  # Smaller initial weights
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
     
@@ -250,19 +255,18 @@ class QNetwork(nn.Module):
 
 
 class GaussianPolicy(nn.Module):
-    """Gaussian policy network for SAC with entropy regularization."""
+    """Gaussian policy network for SAC with entropy regularization - No BatchNorm."""
     
     def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256]):
         super().__init__()
         
-        # Build network
+        # Build network without BatchNorm
         layers = []
         prev_dim = obs_dim
         
-        for i, hidden_dim in enumerate(hidden_dims):
+        for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            if i == 0:
-                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))  # LayerNorm instead of BatchNorm
             layers.append(nn.ReLU())
             prev_dim = hidden_dim
         
@@ -278,13 +282,13 @@ class GaussianPolicy(nn.Module):
         """Initialize weights without bias toward solution."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
         
-        # Small weights for output heads
+        # Very small weights for output heads to start unbiased
         for head in [self.mean_head, self.log_std_head]:
-            nn.init.uniform_(head.weight, -3e-3, 3e-3)
+            nn.init.uniform_(head.weight, -1e-3, 1e-3)
             nn.init.zeros_(head.bias)
     
     def forward(self, s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -306,12 +310,12 @@ class GaussianPolicy(nn.Module):
         normal = torch.distributions.Normal(mean, std)
         x_t = normal.rsample()  # Reparameterization trick
         
-        # Apply constraints for hedging
-        # Delta: sigmoid for [0, 1]
+        # Apply constraints for hedging - more flexible ranges
+        # Delta: sigmoid for [0, 1] but allow wider initial exploration
         delta = torch.sigmoid(x_t[:, 0:1])
         
         # B: tanh with scaling for wider range
-        B = 100.0 * torch.tanh(x_t[:, 1:2])  # Range [-100, 100]
+        B = 50.0 * torch.tanh(x_t[:, 1:2])  # Range [-50, 50] initially
         
         action = torch.cat([delta, B], dim=-1)
         
@@ -322,9 +326,8 @@ class GaussianPolicy(nn.Module):
         log_prob -= torch.log(delta * (1 - delta) + EPS).sum(axis=-1, keepdim=True)
         
         # Jacobian correction for tanh (B) 
-        # d/dx tanh(x) = 1 - tanh^2(x) = sech^2(x)
         tanh_B_raw = torch.tanh(x_t[:, 1:2])
-        log_prob -= torch.log((1 - tanh_B_raw.pow(2)) * 100 + EPS).sum(axis=-1, keepdim=True)
+        log_prob -= torch.log((1 - tanh_B_raw.pow(2)) * 50 + EPS).sum(axis=-1, keepdim=True)
         
         return action, log_prob
     
@@ -334,7 +337,7 @@ class GaussianPolicy(nn.Module):
         
         # Apply same constraints as in sample()
         delta = torch.sigmoid(mean[:, 0:1])
-        B = 100.0 * torch.tanh(mean[:, 1:2])
+        B = 50.0 * torch.tanh(mean[:, 1:2])
         
         return torch.cat([delta, B], dim=-1)
 
@@ -562,8 +565,8 @@ def train_multistep_sac(
             # Store transition
             replay_buffer.push(state, action, reward, next_state, done)
             
-            # Update agent
-            if len(replay_buffer) >= batch_size:
+            # Update agent (start learning after some experience)
+            if len(replay_buffer) >= batch_size and episode > 50:
                 batch = replay_buffer.sample(batch_size)
                 agent.update(batch)
             
@@ -606,7 +609,7 @@ def train_multistep_sac(
             recent_training_reward = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards)
             
             # Get recent alpha value
-            if len(replay_buffer) >= batch_size:
+            if len(replay_buffer) >= batch_size and episode > 50:
                 dummy_batch = replay_buffer.sample(batch_size)
                 update_info = agent.update(dummy_batch)
                 current_alpha = update_info['alpha']
@@ -689,7 +692,7 @@ if __name__ == "__main__":
     T = 3  # Number of time steps
     n_outcomes = 3  # Trinomial per step
     prices_per_step = [0.9, 1.0, 1.1]  # Down, stay, up
-    probabilities = [0.25, 0.5, 0.25]  # Probabilities for each outcome
+    probabilities = [0.33, 0.33, 0.34]  # Probabilities for each outcome
     
     print("Training Multi-Step SAC for N-nomial Option Hedging...")
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")

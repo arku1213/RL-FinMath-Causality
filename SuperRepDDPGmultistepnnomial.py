@@ -165,8 +165,7 @@ class MultiStepNnomialEnv:
         return {
             'expected_final_price': expected_final_price,
             'expected_log_return_per_step': expected_log_return,
-            'variance_log_return_per_step': var_log_return,
-            'implied_volatility': np.sqrt(var_log_return * self.T)
+            'variance_log_return_per_step': var_log_return
         }
 
 
@@ -544,7 +543,6 @@ def train_multistep_ddpg(
         print(f"Price multipliers per step: {prices_per_step}")
         print(f"Probabilities: {probabilities}")
         print(f"Expected final price: {price_stats['expected_final_price']:.2f}")
-        print(f"Implied volatility: {price_stats['implied_volatility']:.4f}")
         print(f"{'='*80}\n")
     
     # Create agent
@@ -701,7 +699,7 @@ if __name__ == "__main__":
     T = 3  # Number of time steps
     n_outcomes = 3  # Trinomial per step
     prices_per_step = [0.9, 1.0, 1.1]  # Down, stay, up
-    probabilities = [0.25, 0.5, 0.25]  # Probabilities for each outcome
+    probabilities = [0.33, 0.33, 0.34]  # Probabilities for each outcome
     
     print("Training Multi-Step DDPG for N-nomial Option Hedging...")
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")
