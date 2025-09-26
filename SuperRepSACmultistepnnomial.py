@@ -1,9 +1,5 @@
 """
 Multi-Step SAC (Soft Actor-Critic) for N-nomial Option Hedging
-Perfect Market: No interest rates, no transaction costs
-Configurable time steps and n-nomial outcomes
-Completely unbiased implementation with entropy regularization
-FIXED: Removed BatchNorm to avoid single-sample training issues
 """
 
 import math
@@ -522,7 +518,6 @@ def train_multistep_sac(
     if verbose:
         print(f"\n{'='*80}")
         print(f"Multi-Step SAC Training for {T}-Step {n_outcomes}-nomial Option Hedging")
-        print(f"Perfect Market - Entropy-Regularized Dynamic Rebalancing")
         print(f"{'='*80}")
         print(f"Environment: S0={S0}, K={K}, T={T} steps")
         print(f"Price multipliers per step: {prices_per_step}")
@@ -689,11 +684,11 @@ def train_multistep_sac(
 if __name__ == "__main__":
     
     # Configure your multi-step n-nomial model
-    T = 3  # Number of time steps
-    n_outcomes = 3  # Trinomial per step
-    prices_per_step = [0.9, 1.0, 1.1]  # Down, stay, up
-    probabilities = [0.33, 0.33, 0.34]  # Probabilities for each outcome
-    
+    T = 8  # Number of time steps
+    n_outcomes = 2  
+    prices_per_step = [0.7, 1.4]  # Down, stay, up
+    probabilities = [0.5, 0.5]  # Probabilities for each outcome
+
     print("Training Multi-Step SAC for N-nomial Option Hedging...")
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")
     print(f"Price multipliers: {prices_per_step}")
