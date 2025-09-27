@@ -18,10 +18,10 @@ np.random.seed(42)
 random.seed(42)
 
 # -------------------------
-# Multi-Step N-nomial Environment
+# Multi-Step N-nomial Environment (Enhanced)
 # -------------------------
 class MultiStepNnomialEnv:
-    """Multi-step N-nomial environment for dynamic option hedging."""
+    """Multi-step N-nomial environment for dynamic option hedging with enhanced rewards."""
     
     def __init__(self, 
                  S0: float,
@@ -49,103 +49,189 @@ class MultiStepNnomialEnv:
         
         self.np_rng = np.random.RandomState(seed)
         
-        # State: [current_price, time_remaining, moneyness, portfolio_value, option_intrinsic_value]
-        self.state_dim = 5
+        # Enhanced state: [current_price, time_remaining, moneyness, portfolio_value, option_intrinsic_value, theoretical_fair_price]
+        self.state_dim = 6
+        
+        # Calculate theoretical fair price for reference
+        self.initial_fair_price = self._calculate_theoretical_fair_price()
         
         # Initialize episode variables
         self.reset()
+    
+    def _calculate_theoretical_fair_price(self) -> float:
+        """Calculate theoretical option fair price using risk-neutral valuation."""
+        # Risk-neutral probability (equal to actual prob when r=0)
+        q = self.probabilities
+        
+        # Calculate expected payoff through all possible paths
+        expected_payoff = 0.0
+        
+        # Generate all possible final outcomes
+        from itertools import product
+        
+        # For simplicity, approximate with a few representative paths
+        # This is a rough estimate - could be made more precise
+        sample_paths = 1000
+        total_payoff = 0.0
+        
+        for _ in range(sample_paths):
+            price = self.S0
+            for step in range(self.T):
+                multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
+                price *= self.prices_per_step[multiplier_idx]
+            
+            payoff = max(price - self.K, 0.0)
+            total_payoff += payoff
+        
+        return total_payoff / sample_paths
+    
+    def _get_current_theoretical_price(self, current_price: float, time_remaining: int) -> float:
+        """Get theoretical price for current state (simplified approximation)."""
+        if time_remaining == 0:
+            return max(current_price - self.K, 0.0)
+        
+        # Simple approximation: scale initial fair price by moneyness and time
+        moneyness = current_price / self.K
+        time_factor = time_remaining / self.T
+        
+        # Basic approximation - could be more sophisticated
+        base_value = max(current_price - self.K, 0.0)  # Intrinsic
+        time_value = self.initial_fair_price * time_factor * 0.5  # Rough time value
+        
+        return base_value + time_value
     
     def reset(self) -> np.ndarray:
         """Reset environment to initial state."""
         self.current_time = 0
         self.current_price = self.S0
-        self.portfolio_value = 0.0  # Will be set by first action
+        self.portfolio_value = 0.0
         
-        # Calculate initial option intrinsic value
+        # Calculate initial values
         option_intrinsic = max(self.current_price - self.K, 0.0)
+        theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
         
         state = np.array([
             self.current_price / 100.0,  # Normalized current price
             (self.T - self.current_time) / self.T,  # Normalized time remaining
             self.current_price / self.K,  # Moneyness
             0.0,  # Initial portfolio value (normalized)
-            option_intrinsic / 100.0  # Normalized option intrinsic value
+            option_intrinsic / 100.0,  # Normalized option intrinsic value
+            theoretical_price / 100.0   # Normalized theoretical fair price
         ], dtype=np.float32)
         
         self.state = state
         return self.state
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
-            """Take a rebalancing step in the environment."""
-            delta = float(action[0])
-            B = float(action[1])
+        """Take a rebalancing step with enhanced reward structure."""
+        delta = float(action[0])
+        B = float(action[1])
+        
+        # Update portfolio value based on action
+        self.portfolio_value = delta * self.current_price + B
+        
+        # Advance time
+        self.current_time += 1
+        done = (self.current_time >= self.T)
+        
+        # Always update price first, regardless of done status
+        price_multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
+        price_multiplier = self.prices_per_step[price_multiplier_idx]
+        new_price = self.current_price * price_multiplier
+        self.current_price = new_price
+        
+        if not done:
+            # Intermediate step logic with enhanced rewards
+            option_intrinsic = max(self.current_price - self.K, 0.0)
+            theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
             
-            # Update portfolio value based on action
-            self.portfolio_value = delta * self.current_price + B
+            # Original rebalancing cost
+            position_change = abs(delta - getattr(self, 'previous_delta', 0.5))
+            rebalancing_cost = -0.001 * position_change
             
-            # Advance time
-            self.current_time += 1
-            done = (self.current_time >= self.T)
+            # NEW: Portfolio realism penalty - penalize negative portfolios when they should be positive
+            portfolio_realism_penalty = 0.0
+            if theoretical_price > 5.0 and self.portfolio_value < 0:
+                portfolio_realism_penalty = -0.01 * abs(self.portfolio_value)
             
-            # FIX: Always update price first, regardless of done status
-            price_multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
-            price_multiplier = self.prices_per_step[price_multiplier_idx]
-            new_price = self.current_price * price_multiplier
-            self.current_price = new_price
+            # NEW: Delta magnitude reward - encourage meaningful positions
+            delta_magnitude_reward = 0.0
+            if theoretical_price > 2.0:  # Only when option has significant value
+                if delta < 0.1:  # Penalize very small deltas when option should be hedged
+                    delta_magnitude_reward = -0.005
+                elif 0.2 < delta < 0.8:  # Reward reasonable delta ranges
+                    delta_magnitude_reward = 0.002
             
-            if not done:
-                # Intermediate step logic
-                option_intrinsic = max(self.current_price - self.K, 0.0)
-                
-                position_change = abs(delta - getattr(self, 'previous_delta', 0.5))
-                rebalancing_cost = -0.001 * position_change
-                reward = rebalancing_cost
-                
-                self.previous_delta = delta
-                
-                next_state = np.array([
-                    self.current_price / 100.0,
-                    (self.T - self.current_time) / self.T,
-                    self.current_price / self.K,
-                    self.portfolio_value / 100.0,
-                    option_intrinsic / 100.0
-                ], dtype=np.float32)
-                
-                info = {
-                    'hedging_error': 0.0,
-                    'portfolio_value': self.portfolio_value,
-                    'option_payoff': option_intrinsic,
-                    'current_price': self.current_price,
-                    'delta': delta,
-                    'B': B,
-                    'time_step': self.current_time,
-                    'rebalancing_cost': rebalancing_cost
-                }
-                
-            else:
-                # Terminal step - now using the updated price
-                option_payoff = max(self.current_price - self.K, 0.0)
-                final_portfolio = delta * self.current_price + B
-                
-                hedging_error = final_portfolio - option_payoff
-                reward = -(hedging_error ** 2) / 100.0
-                
-                next_state = np.zeros(self.state_dim, dtype=np.float32)
-                
-                info = {
-                    'hedging_error': hedging_error,
-                    'portfolio_value': final_portfolio,
-                    'option_payoff': option_payoff,
-                    'current_price': self.current_price,
-                    'delta': delta,
-                    'B': B,
-                    'time_step': self.current_time,
-                    'squared_error': hedging_error ** 2,
-                    'is_terminal': True
-                }
+            reward = rebalancing_cost + portfolio_realism_penalty + delta_magnitude_reward
             
-            self.state = next_state
-            return next_state, reward, done, info
+            # Store previous delta for next step
+            self.previous_delta = delta
+            
+            # Update portfolio value for new price
+            new_portfolio = delta * self.current_price + B
+            self.portfolio_value = new_portfolio
+            
+            # Next state with theoretical price
+            next_state = np.array([
+                self.current_price / 100.0,
+                (self.T - self.current_time) / self.T,
+                self.current_price / self.K,
+                self.portfolio_value / 100.0,
+                option_intrinsic / 100.0,
+                theoretical_price / 100.0
+            ], dtype=np.float32)
+            
+            info = {
+                'hedging_error': 0.0,
+                'portfolio_value': self.portfolio_value,
+                'option_payoff': option_intrinsic,
+                'current_price': self.current_price,
+                'delta': delta,
+                'B': B,
+                'time_step': self.current_time,
+                'rebalancing_cost': rebalancing_cost,
+                'portfolio_realism_penalty': portfolio_realism_penalty,
+                'delta_magnitude_reward': delta_magnitude_reward,
+                'theoretical_price': theoretical_price
+            }
+            
+        else:
+            # Terminal step with enhanced terminal reward
+            option_payoff = max(self.current_price - self.K, 0.0)
+            final_portfolio = delta * self.current_price + B
+            
+            hedging_error = final_portfolio - option_payoff
+            
+            # Enhanced terminal reward
+            base_terminal_reward = -(hedging_error ** 2) / 100.0
+            
+            # NEW: Additional penalty for completely missing the hedge
+            missed_hedge_penalty = 0.0
+            if option_payoff > 0 and final_portfolio <= 0:
+                missed_hedge_penalty = -5.0  # Large penalty for completely missing ITM option
+            elif option_payoff == 0 and final_portfolio < -10:
+                missed_hedge_penalty = -1.0  # Penalty for large negative portfolio when option worthless
+            
+            reward = base_terminal_reward + missed_hedge_penalty
+            
+            # Terminal state
+            next_state = np.zeros(self.state_dim, dtype=np.float32)
+            
+            info = {
+                'hedging_error': hedging_error,
+                'portfolio_value': final_portfolio,
+                'option_payoff': option_payoff,
+                'current_price': self.current_price,
+                'delta': delta,
+                'B': B,
+                'time_step': self.current_time,
+                'squared_error': hedging_error ** 2,
+                'missed_hedge_penalty': missed_hedge_penalty,
+                'is_terminal': True
+            }
+        
+        self.state = next_state
+        return next_state, reward, done, info
     
     def get_theoretical_price_path_stats(self) -> Dict[str, float]:
         """Get statistics about possible price paths for analysis."""
@@ -160,7 +246,8 @@ class MultiStepNnomialEnv:
             'expected_final_price': expected_final_price,
             'expected_log_return_per_step': expected_log_return,
             'variance_log_return_per_step': var_log_return,
-            'implied_volatility': np.sqrt(var_log_return * self.T)
+            'implied_volatility': np.sqrt(var_log_return * self.T),
+            'initial_fair_price': self.initial_fair_price
         }
 
 
@@ -196,7 +283,7 @@ class ReplayBuffer:
 
 
 # -------------------------
-# SAC Networks (Fixed - No BatchNorm)
+# SAC Networks (Enhanced for larger state)
 # -------------------------
 LOG_STD_MIN = -20
 LOG_STD_MAX = 2
@@ -215,7 +302,7 @@ class QNetwork(nn.Module):
         
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(nn.LayerNorm(hidden_dim))  # LayerNorm instead of BatchNorm
+            layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.ReLU())
             prev_dim = hidden_dim
         
@@ -225,10 +312,10 @@ class QNetwork(nn.Module):
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Initialize weights without bias."""
+        """Initialize weights."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight, gain=0.1)  # Smaller initial weights
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
     
@@ -243,19 +330,19 @@ class QNetwork(nn.Module):
 
 
 class GaussianPolicy(nn.Module):
-    """Gaussian policy network for SAC with entropy regularization - No BatchNorm."""
+    """Gaussian policy network for SAC with entropy regularization."""
     
     def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256], strike_price: float = 110.0):
         super().__init__()
         self.K = strike_price
 
-        # Build network without BatchNorm
+        # Build network
         layers = []
         prev_dim = obs_dim
         
         for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(nn.LayerNorm(hidden_dim))  # LayerNorm instead of BatchNorm
+            layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.ReLU())
             prev_dim = hidden_dim
         
@@ -268,14 +355,14 @@ class GaussianPolicy(nn.Module):
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Initialize weights without bias toward solution."""
+        """Initialize weights for reasonable exploration."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
         
-        # Very small weights for output heads to start unbiased
+        # Initialize output heads for reasonable initial exploration
         for head in [self.mean_head, self.log_std_head]:
             nn.init.uniform_(head.weight, -1e-3, 1e-3)
             nn.init.zeros_(head.bias)
@@ -291,8 +378,7 @@ class GaussianPolicy(nn.Module):
         return mean, log_std
     
     def sample(self, s: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample action with reparameterization trick and apply constraints."""
-        # Ensure s is 2D
+        """Sample action with constraints."""
         if len(s.shape) == 1:
             s = s.unsqueeze(0)
         
@@ -305,9 +391,8 @@ class GaussianPolicy(nn.Module):
         # Delta: [0, 1] for call option hedging
         delta = torch.sigmoid(x_t[:, 0:1])
         
-        # B: Simple bounds [-100, 100] for better hedging flexibility
-        B_raw = torch.tanh(x_t[:, 1:2])  # [-1, 1]
-        B = 100.0 * B_raw  # Maps [-1,1] to [-100, 100]
+        # B: [-100, 100] for better flexibility
+        B = 100.0 * torch.tanh(x_t[:, 1:2])
         
         action = torch.cat([delta, B], dim=-1)
         
@@ -317,13 +402,14 @@ class GaussianPolicy(nn.Module):
         # Jacobian correction for sigmoid (delta)
         log_prob -= torch.log(delta * (1 - delta) + EPS).sum(axis=-1, keepdim=True)
         
-        # Jacobian correction for B transformation  
+        # Jacobian correction for B transformation
+        B_raw = torch.tanh(x_t[:, 1:2])
         log_prob -= torch.log(100.0 * (1 - B_raw.pow(2)) + EPS).sum(axis=-1, keepdim=True)
         
         return action, log_prob
     
     def deterministic_action(self, s: torch.Tensor) -> torch.Tensor:
-        """Get deterministic action (mean with constraints applied)."""
+        """Get deterministic action."""
         if len(s.shape) == 1:
             s = s.unsqueeze(0)
             
@@ -331,7 +417,7 @@ class GaussianPolicy(nn.Module):
         
         # Apply same constraints as in sample()
         delta = torch.sigmoid(mean[:, 0:1])
-        B = 100.0 * torch.tanh(mean[:, 1:2])  # Maps to [-100, 100]
+        B = 100.0 * torch.tanh(mean[:, 1:2])
         
         return torch.cat([delta, B], dim=-1)
 
@@ -349,7 +435,7 @@ class MultiStepSACAgent:
                  lr: float = 3e-4,
                  gamma: float = 0.99,
                  tau: float = 0.005,
-                 alpha: float = 0.2,
+                 alpha: float = 0.5,  # Higher initial alpha for more exploration
                  automatic_entropy_tuning: bool = True,
                  device: str = 'cpu',
                  strike_price: float = 110.0):
@@ -375,9 +461,9 @@ class MultiStepSACAgent:
                                      list(self.q2.parameters()), lr=lr)
         self.policy_optimizer = optim.Adam(self.policy.parameters(), lr=lr)
         
-        # Automatic entropy tuning
+        # Automatic entropy tuning with higher initial value
         if automatic_entropy_tuning:
-            self.target_entropy = -float(act_dim)  # Standard heuristic
+            self.target_entropy = -float(act_dim)
             self.log_alpha = torch.tensor(np.log(alpha), requires_grad=True, device=device)
             self.alpha_optimizer = optim.Adam([self.log_alpha], lr=lr)
         else:
@@ -388,18 +474,16 @@ class MultiStepSACAgent:
         state = torch.FloatTensor(state).to(self.device)
         
         if evaluate:
-            # Use deterministic action for evaluation
             with torch.no_grad():
                 action = self.policy.deterministic_action(state)
         else:
-            # Sample stochastic action for exploration
             with torch.no_grad():
                 action, _ = self.policy.sample(state)
         
         return action.squeeze(0).cpu().numpy()
     
     def update(self, batch: Tuple[torch.Tensor, ...]) -> Dict[str, float]:
-        """Update SAC networks with entropy regularization."""
+        """Update SAC networks."""
         states, actions, rewards, next_states, dones = batch
         
         # Move to device
@@ -479,14 +563,14 @@ class MultiStepSACAgent:
 # Training Function
 # -------------------------
 def train_multistep_sac(
-    T: int = 3,                    # Number of time steps
-    n_outcomes: int = 3,           # Number of outcomes per step  
-    prices_per_step: List[float] = [0.9, 1.0, 1.1],  # Price multipliers
-    probabilities: List[float] = [0.25, 0.5, 0.25],   # Probabilities
+    T: int = 3,
+    n_outcomes: int = 3,
+    prices_per_step: List[float] = [0.9, 1.0, 1.1],
+    probabilities: List[float] = [0.25, 0.5, 0.25],
     S0: float = 100.0,
     K: float = 110.0,
-    episodes: int = 20000,         # Episodes for SAC convergence
-    batch_size: int = 256,         # SAC typically uses larger batches
+    episodes: int = 20000,
+    batch_size: int = 256,
     buffer_size: int = 100000,
     hidden_dims: List[int] = [256, 256],
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
@@ -516,17 +600,19 @@ def train_multistep_sac(
     
     if verbose:
         print(f"\n{'='*80}")
-        print(f"Multi-Step SAC Training for {T}-Step {n_outcomes}-nomial Option Hedging")
+        print(f"Enhanced Multi-Step SAC Training for {T}-Step {n_outcomes}-nomial Option Hedging")
         print(f"{'='*80}")
         print(f"Environment: S0={S0}, K={K}, T={T} steps")
         print(f"Price multipliers per step: {prices_per_step}")
         print(f"Probabilities: {probabilities}")
         print(f"Implied volatility: {price_stats['implied_volatility']:.4f}")
+        print(f"Theoretical initial fair price: ${price_stats['initial_fair_price']:.2f}")
+        print(f"Enhanced rewards: Portfolio realism, Delta magnitude, Missed hedge penalties")
         print(f"{'='*80}\n")
     
     # Create agent
     agent = MultiStepSACAgent(
-        obs_dim=env.state_dim,
+        obs_dim=env.state_dim,  # Now 6 instead of 5
         act_dim=2,
         hidden_dims=hidden_dims,
         device=device,
@@ -575,20 +661,26 @@ def train_multistep_sac(
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         
-        # Logging
+        # Enhanced logging
         if verbose and episode % 2500 == 0:
             # Evaluate current policy
             eval_rewards = []
             eval_errors = []
+            eval_portfolios = []
             
-            for _ in range(10):  # Multiple evaluation episodes
+            for _ in range(10):
                 state = env.reset()
                 eval_reward = 0
+                initial_portfolio = None
                 
                 while True:
                     action = agent.select_action(state, evaluate=True)
                     next_state, reward, done, info = env.step(action)
                     eval_reward += reward
+                    
+                    if initial_portfolio is None:
+                        initial_portfolio = info.get('portfolio_value', 0)
+                    
                     state = next_state
                     
                     if done:
@@ -597,9 +689,12 @@ def train_multistep_sac(
                         break
                 
                 eval_rewards.append(eval_reward)
+                if initial_portfolio is not None:
+                    eval_portfolios.append(initial_portfolio)
             
             avg_reward = np.mean(eval_rewards)
             avg_error = np.mean(eval_errors) if eval_errors else 0
+            avg_initial_portfolio = np.mean(eval_portfolios) if eval_portfolios else 0
             recent_training_reward = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards)
             
             # Get recent alpha value
@@ -608,12 +703,13 @@ def train_multistep_sac(
                 update_info = agent.update(dummy_batch)
                 current_alpha = update_info['alpha']
             else:
-                current_alpha = 0.2
+                current_alpha = 0.5
             
             print(f"Episode {episode:5d}")
             print(f"  Training reward: {recent_training_reward:.4f}")
             print(f"  Eval reward: {avg_reward:.4f}")
             print(f"  Avg hedging error: {avg_error:.4f}")
+            print(f"  Avg initial portfolio: {avg_initial_portfolio:.2f} (target: ~{price_stats['initial_fair_price']:.2f})")
             print(f"  Alpha (entropy weight): {current_alpha:.4f}")
             print(f"  Replay buffer size: {len(replay_buffer)}")
             print()
@@ -627,24 +723,30 @@ def train_multistep_sac(
         final_rewards = []
         final_errors = []
         final_paths = []
+        final_initial_portfolios = []
         
         # Run multiple evaluation episodes
         for eval_ep in range(100):
             state = env.reset()
             episode_path = []
             episode_reward = 0
+            initial_portfolio = None
             
             while True:
                 action = agent.select_action(state, evaluate=True)
                 next_state, reward, done, info = env.step(action)
                 episode_reward += reward
                 
+                if initial_portfolio is None:
+                    initial_portfolio = info.get('portfolio_value', 0)
+                
                 episode_path.append({
                     'time_step': info.get('time_step', 0),
                     'price': info.get('current_price', 0),
                     'delta': info.get('delta', 0),
                     'B': info.get('B', 0),
-                    'portfolio': info.get('portfolio_value', 0)
+                    'portfolio': info.get('portfolio_value', 0),
+                    'theoretical_price': info.get('theoretical_price', 0)
                 })
                 
                 state = next_state
@@ -655,6 +757,8 @@ def train_multistep_sac(
                     break
             
             final_rewards.append(episode_reward)
+            if initial_portfolio is not None:
+                final_initial_portfolios.append(initial_portfolio)
             if eval_ep < 3:  # Store first 3 paths for analysis
                 final_paths.append(episode_path)
         
@@ -666,11 +770,21 @@ def train_multistep_sac(
         print(f"  Max |hedging error|: {np.max(np.abs(final_errors)):.6f}")
         print(f"  MSE: {np.mean(np.array(final_errors)**2):.6f}")
         
-        print(f"\nSample Episode Path:")
-        for step in final_paths[0]:
-            print(f"  Step {step['time_step']}: Price={step['price']:.2f}, "
-                  f"Δ={step['delta']:.4f}, B={step['B']:.2f}, "
-                  f"Portfolio={step['portfolio']:.2f}")
+        if final_initial_portfolios:
+            print(f"  Mean initial portfolio: {np.mean(final_initial_portfolios):.2f} (target: ~{price_stats['initial_fair_price']:.2f})")
+            print(f"  Portfolio improvement: {(np.mean(final_initial_portfolios) / price_stats['initial_fair_price'] * 100):.1f}% of theoretical")
+        
+        print(f"\nSample Episode Path with Theoretical Comparison:")
+        print(f"{'Step':>4} | {'Price':>6} | {'Delta':>6} | {'B':>7} | {'Portfolio':>9} | {'Theoretical':>11}")
+        print("-" * 70)
+        if final_paths:
+            for step in final_paths[0]:
+                print(f"{step['time_step']:4d} | "
+                      f"${step['price']:5.2f} | "
+                      f"{step['delta']:6.4f} | "
+                      f"${step['B']:6.2f} | "
+                      f"${step['portfolio']:8.2f} | "
+                      f"${step.get('theoretical_price', 0):10.2f}")
         
         print(f"{'='*80}")
     
@@ -685,10 +799,10 @@ if __name__ == "__main__":
     # Configure your multi-step n-nomial model
     T = 4  # Number of time steps
     n_outcomes = 2  
-    prices_per_step = [0.8, 1.2]  # Down, stay, up
+    prices_per_step = [0.8, 1.2]  # Down, up
     probabilities = [0.5, 0.5]  # Probabilities for each outcome
 
-    print("Training Multi-Step SAC for N-nomial Option Hedging...")
+    print("Training Enhanced Multi-Step SAC for N-nomial Option Hedging...")
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")
     print(f"Price multipliers: {prices_per_step}")
     print(f"Probabilities: {probabilities}")
@@ -705,3 +819,11 @@ if __name__ == "__main__":
         device='cuda' if torch.cuda.is_available() else 'cpu',
         verbose=True
     )
+    
+    print(f"\nTraining completed!")
+    print(f"Final results:")
+    print(f"  Total episodes: {len(rewards)}")
+    print(f"  Final reward trend: {np.mean(rewards[-100:]):.4f}")
+    if errors:
+        print(f"  Final hedging error trend: {np.mean(errors[-100:]):.4f}")
+    print(f"  Agent saved and ready for use.")
