@@ -808,9 +808,9 @@ def train_multistep_sac(
 if __name__ == "__main__":
     
     # Configure your multi-step n-nomial model
-    T = 4  # Number of time steps
+    T = 1  # Number of time steps
     n_outcomes = 2  
-    prices_per_step = [0.8, 1.2]  # Down, up
+    prices_per_step = [0.8, 1.4]  # Down, up
     probabilities = [0.5, 0.5]  # Probabilities for each outcome
 
     print("Training Enhanced Multi-Step SAC for N-nomial Option Hedging...")
