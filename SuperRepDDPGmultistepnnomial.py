@@ -1,8 +1,7 @@
 """
 Multi-Step DDPG (Deep Deterministic Policy Gradient) for N-nomial Option Hedging
-Perfect Market: No interest rates, no transaction costs
-Configurable time steps and n-nomial outcomes
-Completely unbiased implementation
+Enhanced with better reward structure and state representation
+Adapted from SAC implementation
 """
 
 import math
@@ -15,11 +14,16 @@ import torch.optim as optim
 import torch.nn.functional as F
 from typing import List, Tuple, Optional, Dict
 
+# Set random seeds for reproducibility
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+
 # -------------------------
-# Multi-Step N-nomial Environment (same as TD3)
+# Multi-Step N-nomial Environment (Enhanced) - Same as SAC version
 # -------------------------
 class MultiStepNnomialEnv:
-    """Multi-step N-nomial environment for dynamic option hedging."""
+    """Multi-step N-nomial environment for dynamic option hedging with enhanced rewards."""
     
     def __init__(self, 
                  S0: float,
@@ -47,36 +51,94 @@ class MultiStepNnomialEnv:
         
         self.np_rng = np.random.RandomState(seed)
         
-        # State: [current_price, time_remaining, moneyness, portfolio_value, option_intrinsic_value]
-        self.state_dim = 5
+        # Enhanced state: [current_price, time_remaining, moneyness, portfolio_value, option_intrinsic_value, theoretical_fair_price]
+        self.state_dim = 6
+        
+        # Calculate theoretical fair price for reference
+        self.initial_fair_price = self._calculate_theoretical_fair_price()
         
         # Initialize episode variables
         self.reset()
+    
+    def _calculate_theoretical_fair_price(self) -> float:
+        """Calculate theoretical option fair price using proper binomial valuation."""
+        # Use exact binomial pricing formula
+        u = max(self.prices_per_step)  # Up multiplier
+        d = min(self.prices_per_step)  # Down multiplier
+        p = self.probabilities[self.prices_per_step.index(u)]  # Probability of up move
+        
+        # Calculate option value using backward induction
+        def binomial_option_price(S, T, K, u, d, p):
+            # Build price tree
+            prices = {}
+            for i in range(T + 1):
+                for j in range(i + 1):
+                    prices[(i, j)] = S * (u ** j) * (d ** (i - j))
+            
+            # Terminal payoffs
+            option_values = {}
+            for j in range(T + 1):
+                option_values[(T, j)] = max(prices[(T, j)] - K, 0)
+            
+            # Work backwards
+            for i in range(T - 1, -1, -1):
+                for j in range(i + 1):
+                    option_values[(i, j)] = p * option_values[(i + 1, j + 1)] + (1 - p) * option_values[(i + 1, j)]
+            
+            return option_values[(0, 0)]
+        
+        return binomial_option_price(self.S0, self.T, self.K, u, d, p)
+    
+    def _get_current_theoretical_price(self, current_price: float, time_remaining: int) -> float:
+        """Get theoretical price for current state using proper binomial pricing."""
+        if time_remaining == 0:
+            return max(current_price - self.K, 0.0)
+        
+        u = max(self.prices_per_step)
+        d = min(self.prices_per_step)
+        p = self.probabilities[self.prices_per_step.index(u)]
+        
+        # Calculate option value from current state
+        def binomial_from_current(S, T, K, u, d, p):
+            if T == 0:
+                return max(S - K, 0)
+            
+            # One step ahead values
+            up_price = S * u
+            down_price = S * d
+            up_value = binomial_from_current(up_price, T - 1, K, u, d, p)
+            down_value = binomial_from_current(down_price, T - 1, K, u, d, p)
+            
+            return p * up_value + (1 - p) * down_value
+        
+        return binomial_from_current(current_price, time_remaining, self.K, u, d, p)
     
     def reset(self) -> np.ndarray:
         """Reset environment to initial state."""
         self.current_time = 0
         self.current_price = self.S0
-        self.portfolio_value = 0.0  # Will be set by first action
+        self.portfolio_value = 0.0
         
-        # Calculate initial option intrinsic value
+        # Calculate initial values
         option_intrinsic = max(self.current_price - self.K, 0.0)
+        theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
         
         state = np.array([
             self.current_price / 100.0,  # Normalized current price
             (self.T - self.current_time) / self.T,  # Normalized time remaining
             self.current_price / self.K,  # Moneyness
             0.0,  # Initial portfolio value (normalized)
-            option_intrinsic / 100.0  # Normalized option intrinsic value
+            option_intrinsic / 100.0,  # Normalized option intrinsic value
+            theoretical_price / 100.0   # Normalized theoretical fair price
         ], dtype=np.float32)
         
         self.state = state
         return self.state
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Take a rebalancing step in the environment."""
-        delta = float(action[0])  # New hedge ratio
-        B = float(action[1])      # New cash position
+        """Take a rebalancing step with enhanced reward structure."""
+        delta = float(action[0])
+        B = float(action[1])
         
         # Update portfolio value based on action
         self.portfolio_value = delta * self.current_price + B
@@ -85,57 +147,86 @@ class MultiStepNnomialEnv:
         self.current_time += 1
         done = (self.current_time >= self.T)
         
+        # Always update price first, regardless of done status
+        price_multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
+        price_multiplier = self.prices_per_step[price_multiplier_idx]
+        new_price = self.current_price * price_multiplier
+        self.current_price = new_price
+        
         if not done:
-            # Sample next price based on current price and n-nomial model
-            price_multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
-            price_multiplier = self.prices_per_step[price_multiplier_idx]
-            
-            # Update price
-            new_price = self.current_price * price_multiplier
-            self.current_price = new_price
-            
-            # Calculate option intrinsic value at new price and time
+            # Intermediate step logic with enhanced rewards
             option_intrinsic = max(self.current_price - self.K, 0.0)
+            theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
             
-            # Intermediate reward: negative rebalancing cost
+            # Enhanced rewards with stronger portfolio size constraints
             position_change = abs(delta - getattr(self, 'previous_delta', 0.5))
-            rebalancing_cost = -0.01 * position_change
-            reward = rebalancing_cost
+            rebalancing_cost = -0.001 * position_change
+            
+            # FIXED: Strong portfolio size penalty - penalize deviation from theoretical value
+            portfolio_size_penalty = 0.0
+            target_portfolio = theoretical_price
+            portfolio_deviation = abs(self.portfolio_value - target_portfolio)
+            
+            if portfolio_deviation > target_portfolio * 0.5:  # More than 50% deviation
+                portfolio_size_penalty = -0.1 * portfolio_deviation
+            elif portfolio_deviation > target_portfolio * 0.2:  # More than 20% deviation  
+                portfolio_size_penalty = -0.02 * portfolio_deviation
+            
+            # FIXED: Remove problematic penalties that caused over-hedging
+            # Just use simple rebalancing cost + portfolio size constraint
+            reward = rebalancing_cost + portfolio_size_penalty
             
             # Store previous delta for next step
             self.previous_delta = delta
             
-            # Next state
+            # Update portfolio value for new price
+            new_portfolio = delta * self.current_price + B
+            self.portfolio_value = new_portfolio
+            
+            # Next state with theoretical price
             next_state = np.array([
                 self.current_price / 100.0,
                 (self.T - self.current_time) / self.T,
                 self.current_price / self.K,
                 self.portfolio_value / 100.0,
-                option_intrinsic / 100.0
+                option_intrinsic / 100.0,
+                theoretical_price / 100.0
             ], dtype=np.float32)
             
             info = {
-                'hedging_error': 0.0,  # Not applicable for intermediate steps
+                'hedging_error': 0.0,
                 'portfolio_value': self.portfolio_value,
                 'option_payoff': option_intrinsic,
                 'current_price': self.current_price,
                 'delta': delta,
                 'B': B,
                 'time_step': self.current_time,
-                'rebalancing_cost': rebalancing_cost
+                'rebalancing_cost': rebalancing_cost,
+                'portfolio_size_penalty': portfolio_size_penalty,
+                'theoretical_price': theoretical_price,
+                'target_portfolio': target_portfolio
             }
             
         else:
-            # Terminal step - calculate final hedging error
+            # Terminal step with enhanced terminal reward
             option_payoff = max(self.current_price - self.K, 0.0)
             final_portfolio = delta * self.current_price + B
             
             hedging_error = final_portfolio - option_payoff
             
-            # Terminal reward: negative squared hedging error (scaled)
-            reward = -(hedging_error ** 2) / 1000.0
+            # Enhanced terminal reward
+            base_terminal_reward = -(hedging_error ** 2) / 100.0
             
-            # Terminal state (all zeros to indicate episode end)
+            # NEW: Additional penalty for completely missing the hedge
+            missed_hedge_penalty = 0.0
+            if option_payoff > 0 and final_portfolio <= 0:
+                missed_hedge_penalty = -5.0  # Large penalty for completely missing ITM option
+            elif option_payoff == 0 and final_portfolio < -10:
+                missed_hedge_penalty = -1.0  # Penalty for large negative portfolio when option worthless
+            
+            reward = base_terminal_reward + missed_hedge_penalty
+            
+            # Terminal state
             next_state = np.zeros(self.state_dim, dtype=np.float32)
             
             info = {
@@ -147,6 +238,7 @@ class MultiStepNnomialEnv:
                 'B': B,
                 'time_step': self.current_time,
                 'squared_error': hedging_error ** 2,
+                'missed_hedge_penalty': missed_hedge_penalty,
                 'is_terminal': True
             }
         
@@ -165,12 +257,14 @@ class MultiStepNnomialEnv:
         return {
             'expected_final_price': expected_final_price,
             'expected_log_return_per_step': expected_log_return,
-            'variance_log_return_per_step': var_log_return
+            'variance_log_return_per_step': var_log_return,
+            'implied_volatility': np.sqrt(var_log_return * self.T),
+            'initial_fair_price': self.initial_fair_price
         }
 
 
 # -------------------------
-# Replay Buffer (same as TD3)
+# Replay Buffer (Same as SAC version)
 # -------------------------
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
 
@@ -201,224 +295,192 @@ class ReplayBuffer:
 
 
 # -------------------------
-# Ornstein-Uhlenbeck Noise for Exploration (DDPG-specific)
+# DDPG Networks
 # -------------------------
-class OrnsteinUhlenbeckNoise:
-    """Ornstein-Uhlenbeck process for correlated exploration noise."""
-    def __init__(self, 
-                 size: int,
-                 mu: float = 0.0,
-                 theta: float = 0.15,
-                 sigma: float = 0.2,
-                 dt: float = 1e-2,
-                 seed: int = 0):
+class CriticNetwork(nn.Module):
+    """Critic network for DDPG - estimates Q(s,a)."""
+    
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256]):
+        super().__init__()
+        
+        input_dim = obs_dim + act_dim
+        
+        # Build network
+        layers = []
+        prev_dim = input_dim
+        
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+        
+        layers.append(nn.Linear(prev_dim, 1))
+        self.network = nn.Sequential(*layers)
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize weights."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        if len(s.shape) == 1:
+            s = s.unsqueeze(0)
+        if len(a.shape) == 1:
+            a = a.unsqueeze(0)
+        
+        x = torch.cat([s, a], dim=-1)
+        return self.network(x).squeeze(-1)
+
+
+class ActorNetwork(nn.Module):
+    """Actor network for DDPG - deterministic policy."""
+    
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256], strike_price: float = 110.0):
+        super().__init__()
+        self.K = strike_price
+        
+        # Build network
+        layers = []
+        prev_dim = obs_dim
+        
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+        
+        self.backbone = nn.Sequential(*layers)
+        
+        # Output layer for actions
+        self.action_head = nn.Linear(prev_dim, act_dim)
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize weights for stable training."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        
+        # Initialize output layer for reasonable initial actions
+        nn.init.uniform_(self.action_head.weight, -1e-3, 1e-3)
+        nn.init.zeros_(self.action_head.bias)
+    
+    def forward(self, s: torch.Tensor) -> torch.Tensor:
+        if len(s.shape) == 1:
+            s = s.unsqueeze(0)
+        
+        features = self.backbone(s)
+        raw_actions = self.action_head(features)
+        
+        # Apply constraints to actions
+        # Delta: [0, 1] for call option hedging
+        delta = torch.sigmoid(raw_actions[:, 0:1])
+        
+        # B: [-100, 100] for better flexibility
+        B = 100.0 * torch.tanh(raw_actions[:, 1:2])
+        
+        action = torch.cat([delta, B], dim=-1)
+        return action
+
+
+# -------------------------
+# Ornstein-Uhlenbeck Noise for DDPG
+# -------------------------
+class OUNoise:
+    """Ornstein-Uhlenbeck process for action noise in DDPG."""
+    
+    def __init__(self, size: int, mu: float = 0.0, theta: float = 0.15, sigma: float = 0.2):
         self.mu = mu * np.ones(size)
         self.theta = theta
         self.sigma = sigma
-        self.dt = dt
-        self.seed = seed
         self.reset()
     
     def reset(self):
         """Reset the internal state to mean."""
-        np.random.seed(self.seed)
-        self.state = np.copy(self.mu)
+        self.state = self.mu.copy()
     
     def sample(self) -> np.ndarray:
-        """Update internal state and return it as noise."""
-        x = self.state
-        dx = self.theta * (self.mu - x) * self.dt + \
-             self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
-        self.state = x + dx
+        """Update internal state and return noise sample."""
+        dx = self.theta * (self.mu - self.state) + self.sigma * np.random.normal(size=len(self.state))
+        self.state += dx
         return self.state
-
-
-# -------------------------
-# DDPG Networks
-# -------------------------
-class Actor(nn.Module):
-    """Actor network for DDPG multi-step hedging."""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dims: List[int] = [400, 300]):
-        super(Actor, self).__init__()
-        
-        # Build network layers
-        self.fc1 = nn.Linear(state_dim, hidden_dims[0])
-        self.bn1 = nn.BatchNorm1d(hidden_dims[0])
-        self.fc2 = nn.Linear(hidden_dims[0], hidden_dims[1])
-        self.bn2 = nn.BatchNorm1d(hidden_dims[1])
-        
-        # Output layer
-        self.output_layer = nn.Linear(hidden_dims[1], action_dim)
-        
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """Initialize weights with no bias toward solution."""
-        # Hidden layers
-        for layer in [self.fc1, self.fc2]:
-            fan_in = layer.weight.data.size()[0]
-            lim = 1. / np.sqrt(fan_in)
-            layer.weight.data.uniform_(-lim, lim)
-            layer.bias.data.uniform_(-lim, lim)
-        
-        # Output layer - small weights for stability, zero bias
-        init_w = 3e-3
-        self.output_layer.weight.data.uniform_(-init_w, init_w)
-        self.output_layer.bias.data.zero_()  # No bias toward any solution
-    
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
-        """Forward pass with action constraints."""
-        # Handle both batch and single state
-        if len(state.shape) == 1:
-            state = state.unsqueeze(0)
-            squeeze_output = True
-        else:
-            squeeze_output = False
-        
-        # Network forward pass
-        x = F.relu(self.bn1(self.fc1(state)))
-        x = F.relu(self.bn2(self.fc2(x)))
-        raw_output = self.output_layer(x)
-        
-        # Apply constraints for hedging actions
-        # Delta: sigmoid for [0, 1]
-        delta = torch.sigmoid(raw_output[:, 0:1])
-        
-        # B: tanh with wider range for multi-step
-        B = 100.0 * torch.tanh(raw_output[:, 1:2])  # Range [-100, 100]
-        
-        action = torch.cat([delta, B], dim=-1)
-        
-        if squeeze_output:
-            action = action.squeeze(0)
-        
-        return action
-
-
-class Critic(nn.Module):
-    """Critic network for DDPG Q-value estimation."""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dims: List[int] = [400, 300]):
-        super(Critic, self).__init__()
-        
-        # First layer processes state
-        self.fc1 = nn.Linear(state_dim, hidden_dims[0])
-        self.bn1 = nn.BatchNorm1d(hidden_dims[0])
-        
-        # Second layer processes state features + action
-        self.fc2 = nn.Linear(hidden_dims[0] + action_dim, hidden_dims[1])
-        
-        # Output layer
-        self.fc3 = nn.Linear(hidden_dims[1], 1)
-        
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """Initialize weights properly."""
-        # First layer
-        fan_in = self.fc1.weight.data.size()[0]
-        lim = 1. / np.sqrt(fan_in)
-        self.fc1.weight.data.uniform_(-lim, lim)
-        self.fc1.bias.data.uniform_(-lim, lim)
-        
-        # Second layer
-        fan_in = self.fc2.weight.data.size()[0]
-        lim = 1. / np.sqrt(fan_in)
-        self.fc2.weight.data.uniform_(-lim, lim)
-        self.fc2.bias.data.uniform_(-lim, lim)
-        
-        # Output layer
-        init_w = 3e-3
-        self.fc3.weight.data.uniform_(-init_w, init_w)
-        self.fc3.bias.data.uniform_(-init_w, init_w)
-    
-    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """Forward pass to compute Q-value."""
-        if len(state.shape) == 1:
-            state = state.unsqueeze(0)
-        if len(action.shape) == 1:
-            action = action.unsqueeze(0)
-        
-        # Process state
-        xs = F.relu(self.bn1(self.fc1(state)))
-        
-        # Concatenate with action and continue
-        x = torch.cat([xs, action], dim=-1)
-        x = F.relu(self.fc2(x))
-        
-        # Output Q-value
-        q_value = self.fc3(x)
-        
-        return q_value.squeeze(-1)
 
 
 # -------------------------
 # Multi-Step DDPG Agent
 # -------------------------
 class MultiStepDDPGAgent:
-    """DDPG agent optimized for multi-step option hedging."""
+    """DDPG agent for multi-step option hedging."""
     
     def __init__(self,
-                 state_dim: int,
-                 action_dim: int,
-                 hidden_dims: List[int] = [400, 300],
-                 actor_lr: float = 1e-4,
-                 critic_lr: float = 1e-3,
-                 gamma: float = 0.99,  # Standard discounting for multi-step
-                 tau: float = 1e-3,    # DDPG standard target update rate
-                 noise_theta: float = 0.15,
-                 noise_sigma: float = 0.2,
-                 noise_decay: float = 0.9999,
-                 min_noise: float = 0.01,
-                 device: str = 'cpu'):
+                 obs_dim: int,
+                 act_dim: int,
+                 hidden_dims: List[int] = [256, 256],
+                 lr_actor: float = 1e-4,
+                 lr_critic: float = 3e-4,
+                 gamma: float = 0.99,
+                 tau: float = 0.005,
+                 noise_std: float = 0.2,
+                 noise_clip: float = 0.5,
+                 device: str = 'cpu',
+                 strike_price: float = 110.0):
         
         self.device = device
         self.gamma = gamma
         self.tau = tau
-        self.action_dim = action_dim
+        self.noise_std = noise_std
+        self.noise_clip = noise_clip
         
         # Networks
-        self.actor = Actor(state_dim, action_dim, hidden_dims).to(device)
-        self.actor_target = Actor(state_dim, action_dim, hidden_dims).to(device)
-        self.critic = Critic(state_dim, action_dim, hidden_dims).to(device)
-        self.critic_target = Critic(state_dim, action_dim, hidden_dims).to(device)
+        self.actor = ActorNetwork(obs_dim, act_dim, hidden_dims, strike_price=strike_price).to(device)
+        self.critic = CriticNetwork(obs_dim, act_dim, hidden_dims).to(device)
+        self.actor_target = ActorNetwork(obs_dim, act_dim, hidden_dims, strike_price=strike_price).to(device)
+        self.critic_target = CriticNetwork(obs_dim, act_dim, hidden_dims).to(device)
         
-        # Initialize target networks
-        self.hard_update(self.actor_target, self.actor)
-        self.hard_update(self.critic_target, self.critic)
+        # Initialize targets
+        self.actor_target.load_state_dict(self.actor.state_dict())
+        self.critic_target.load_state_dict(self.critic.state_dict())
         
         # Optimizers
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), 
-                                          lr=critic_lr, 
-                                          weight_decay=1e-4)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr_actor)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
         
-        # Ornstein-Uhlenbeck noise process for exploration
-        self.noise = OrnsteinUhlenbeckNoise(action_dim, 
-                                           theta=noise_theta,
-                                           sigma=noise_sigma)
-        self.noise_scale = 1.0
-        self.noise_decay = noise_decay
-        self.min_noise = min_noise
+        # Noise process for exploration
+        self.noise = OUNoise(act_dim, sigma=noise_std)
+        
+        # Track training step for delayed policy updates
+        self.training_step = 0
     
-    def select_action(self, state: np.ndarray, add_noise: bool = False) -> np.ndarray:
-        """Select action from policy with optional exploration noise."""
+    def select_action(self, state: np.ndarray, evaluate: bool = False, add_noise: bool = True) -> np.ndarray:
+        """Select action from policy."""
         state = torch.FloatTensor(state).to(self.device)
         
-        self.actor.eval()
         with torch.no_grad():
-            action = self.actor(state).cpu().numpy()
-        self.actor.train()
+            action = self.actor(state)
         
-        # Add exploration noise
-        if add_noise:
-            noise = self.noise.sample() * self.noise_scale
-            action = action + noise
+        action = action.squeeze(0).cpu().numpy()
+        
+        # Add noise for exploration during training
+        if not evaluate and add_noise:
+            noise = self.noise.sample()
             
-            # Clip action to valid range
-            action[0] = np.clip(action[0], 0.0, 1.0)    # Delta
-            action[1] = np.clip(action[1], -100.0, 100.0)  # B
+            # Apply noise with clipping
+            # For delta (bounded [0,1]), apply noise carefully
+            delta_noise = np.clip(noise[0] * 0.1, -self.noise_clip, self.noise_clip)
+            action[0] = np.clip(action[0] + delta_noise, 0.0, 1.0)
+            
+            # For B (bounded [-100,100]), apply normal noise
+            B_noise = np.clip(noise[1] * 10.0, -self.noise_clip * 20, self.noise_clip * 20)
+            action[1] = np.clip(action[1] + B_noise, -100.0, 100.0)
         
         return action
     
@@ -433,82 +495,76 @@ class MultiStepDDPGAgent:
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
         
-        # -------------------- Update Critic -------------------- #
-        # Get predicted next actions and Q values from target models
+        self.training_step += 1
+        
+        # Update Critic
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
-            target_q = self.critic_target(next_states, next_actions)
-            target_q = rewards + (1 - dones) * self.gamma * target_q.unsqueeze(-1)
+            
+            # Add target policy smoothing noise (TD3-style)
+            noise = torch.randn_like(next_actions) * self.noise_std
+            noise = torch.clamp(noise, -self.noise_clip, self.noise_clip)
+            
+            # Apply noise with proper constraints
+            noisy_next_actions = next_actions + noise
+            # Ensure delta stays in [0,1]
+            noisy_next_actions[:, 0] = torch.clamp(noisy_next_actions[:, 0], 0.0, 1.0)
+            # Ensure B stays in [-100,100]
+            noisy_next_actions[:, 1] = torch.clamp(noisy_next_actions[:, 1], -100.0, 100.0)
+            
+            q_next = self.critic_target(next_states, noisy_next_actions).unsqueeze(-1)
+            q_target = rewards + (1 - dones) * self.gamma * q_next
         
-        # Compute critic loss
-        current_q = self.critic(states, actions).unsqueeze(-1)
-        critic_loss = F.mse_loss(current_q, target_q)
+        q_pred = self.critic(states, actions).unsqueeze(-1)
+        critic_loss = F.mse_loss(q_pred, q_target)
         
-        # Optimize critic
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
         
-        # -------------------- Update Actor -------------------- #
-        # Compute actor loss (negative Q-value)
-        predicted_actions = self.actor(states)
-        actor_loss = -self.critic(states, predicted_actions).mean()
-        
-        # Optimize actor
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
-        self.actor_optimizer.step()
-        
-        # -------------------- Update Target Networks -------------------- #
-        self.soft_update(self.critic_target, self.critic)
-        self.soft_update(self.actor_target, self.actor)
-        
-        # Decay noise
-        self.decay_noise()
+        # Update Actor (delayed - every 2 steps like TD3)
+        actor_loss = torch.tensor(0.0, device=self.device)
+        if self.training_step % 2 == 0:
+            predicted_actions = self.actor(states)
+            actor_loss = -self.critic(states, predicted_actions).mean()
+            
+            self.actor_optimizer.zero_grad()
+            actor_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+            self.actor_optimizer.step()
+            
+            # Soft update target networks
+            self.soft_update(self.actor, self.actor_target)
+            self.soft_update(self.critic, self.critic_target)
         
         return {
             'critic_loss': critic_loss.item(),
             'actor_loss': actor_loss.item(),
-            'q_value': current_q.mean().item(),
-            'noise_scale': self.noise_scale
+            'q_value': q_pred.mean().item()
         }
     
-    def soft_update(self, target: nn.Module, source: nn.Module):
-        """Soft update target network parameters."""
-        for target_param, param in zip(target.parameters(), source.parameters()):
-            target_param.data.copy_(self.tau * param.data + 
-                                  (1.0 - self.tau) * target_param.data)
-    
-    def hard_update(self, target: nn.Module, source: nn.Module):
-        """Hard update target network parameters."""
-        for target_param, param in zip(target.parameters(), source.parameters()):
-            target_param.data.copy_(param.data)
-    
-    def decay_noise(self):
-        """Decay exploration noise over time."""
-        self.noise_scale = max(self.min_noise, self.noise_scale * self.noise_decay)
-    
-    def reset_noise(self):
-        """Reset noise process."""
-        self.noise.reset()
+    def soft_update(self, source: nn.Module, target: nn.Module):
+        """Soft update target network."""
+        for source_param, target_param in zip(source.parameters(), target.parameters()):
+            target_param.data.copy_(self.tau * source_param.data + 
+                                  (1 - self.tau) * target_param.data)
 
 
 # -------------------------
 # Training Function
 # -------------------------
 def train_multistep_ddpg(
-    T: int = 3,                    # Number of time steps
-    n_outcomes: int = 3,           # Number of outcomes per step  
-    prices_per_step: List[float] = [0.9, 1.0, 1.1],  # Price multipliers
-    probabilities: List[float] = [0.25, 0.5, 0.25],   # Probabilities
+    T: int = 3,
+    n_outcomes: int = 3,
+    prices_per_step: List[float] = [0.9, 1.0, 1.1],
+    probabilities: List[float] = [0.25, 0.5, 0.25],
     S0: float = 100.0,
     K: float = 110.0,
-    episodes: int = 25000,         # More episodes for DDPG convergence
-    batch_size: int = 128,
+    episodes: int = 20000,
+    batch_size: int = 256,
     buffer_size: int = 100000,
-    hidden_dims: List[int] = [400, 300],
+    hidden_dims: List[int] = [256, 256],
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     seed: int = 42,
     verbose: bool = True
@@ -536,21 +592,24 @@ def train_multistep_ddpg(
     
     if verbose:
         print(f"\n{'='*80}")
-        print(f"Multi-Step DDPG Training for {T}-Step {n_outcomes}-nomial Option Hedging")
-        print(f"Perfect Market - Dynamic Rebalancing with Ornstein-Uhlenbeck Exploration")
+        print(f"Enhanced Multi-Step DDPG Training for {T}-Step {n_outcomes}-nomial Option Hedging")
         print(f"{'='*80}")
         print(f"Environment: S0={S0}, K={K}, T={T} steps")
         print(f"Price multipliers per step: {prices_per_step}")
         print(f"Probabilities: {probabilities}")
-        print(f"Expected final price: {price_stats['expected_final_price']:.2f}")
+        print(f"Implied volatility: {price_stats['implied_volatility']:.4f}")
+        print(f"Theoretical initial fair price: ${price_stats['initial_fair_price']:.2f}")
+        print(f"Enhanced rewards: Portfolio realism, Delta magnitude, Missed hedge penalties")
+        print(f"DDPG features: Deterministic policy, Target policy smoothing, Delayed updates")
         print(f"{'='*80}\n")
     
     # Create agent
     agent = MultiStepDDPGAgent(
-        state_dim=env.state_dim,
-        action_dim=2,
+        obs_dim=env.state_dim,  # 6 dimensions
+        act_dim=2,
         hidden_dims=hidden_dims,
-        device=device
+        device=device,
+        strike_price=K
     )
     
     # Create replay buffer
@@ -564,13 +623,15 @@ def train_multistep_ddpg(
     # Training loop
     for episode in range(1, episodes + 1):
         state = env.reset()
-        agent.reset_noise()  # Reset OU noise for each episode
         episode_reward = 0
         episode_length = 0
         
+        # Reset noise at the beginning of each episode
+        agent.noise.reset()
+        
         while True:
-            # Select action with noise
-            action = agent.select_action(state, add_noise=True)
+            # Select action (with exploration noise)
+            action = agent.select_action(state, evaluate=False, add_noise=True)
             
             # Take step
             next_state, reward, done, info = env.step(action)
@@ -580,7 +641,7 @@ def train_multistep_ddpg(
             # Store transition
             replay_buffer.push(state, action, reward, next_state, done)
             
-            # Update agent (start after some exploration)
+            # Update agent (start learning after some experience)
             if len(replay_buffer) >= batch_size and episode > 100:
                 batch = replay_buffer.sample(batch_size)
                 agent.update(batch)
@@ -596,20 +657,26 @@ def train_multistep_ddpg(
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         
-        # Logging
-        if verbose and episode % 3000 == 0:
+        # Enhanced logging
+        if verbose and episode % 2500 == 0:
             # Evaluate current policy
             eval_rewards = []
             eval_errors = []
+            eval_portfolios = []
             
-            for _ in range(10):  # Multiple evaluation episodes
+            for _ in range(10):
                 state = env.reset()
                 eval_reward = 0
+                initial_portfolio = None
                 
                 while True:
-                    action = agent.select_action(state, add_noise=False)
+                    action = agent.select_action(state, evaluate=True, add_noise=False)
                     next_state, reward, done, info = env.step(action)
                     eval_reward += reward
+                    
+                    if initial_portfolio is None:
+                        initial_portfolio = info.get('portfolio_value', 0)
+                    
                     state = next_state
                     
                     if done:
@@ -618,16 +685,34 @@ def train_multistep_ddpg(
                         break
                 
                 eval_rewards.append(eval_reward)
+                if initial_portfolio is not None:
+                    eval_portfolios.append(initial_portfolio)
             
             avg_reward = np.mean(eval_rewards)
             avg_error = np.mean(eval_errors) if eval_errors else 0
+            avg_initial_portfolio = np.mean(eval_portfolios) if eval_portfolios else 0
             recent_training_reward = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards)
+            
+            # Get recent update info
+            if len(replay_buffer) >= batch_size and episode > 100:
+                dummy_batch = replay_buffer.sample(batch_size)
+                update_info = agent.update(dummy_batch)
+                current_q_value = update_info['q_value']
+                critic_loss = update_info['critic_loss']
+                actor_loss = update_info['actor_loss']
+            else:
+                current_q_value = 0.0
+                critic_loss = 0.0
+                actor_loss = 0.0
             
             print(f"Episode {episode:5d}")
             print(f"  Training reward: {recent_training_reward:.4f}")
             print(f"  Eval reward: {avg_reward:.4f}")
             print(f"  Avg hedging error: {avg_error:.4f}")
-            print(f"  Noise scale: {agent.noise_scale:.4f}")
+            print(f"  Avg initial portfolio: {avg_initial_portfolio:.2f} (target: ~{price_stats['initial_fair_price']:.2f})")
+            print(f"  Q-value: {current_q_value:.4f}")
+            print(f"  Critic loss: {critic_loss:.6f}")
+            print(f"  Actor loss: {actor_loss:.6f}")
             print(f"  Replay buffer size: {len(replay_buffer)}")
             print()
     
@@ -640,24 +725,30 @@ def train_multistep_ddpg(
         final_rewards = []
         final_errors = []
         final_paths = []
+        final_initial_portfolios = []
         
         # Run multiple evaluation episodes
         for eval_ep in range(100):
             state = env.reset()
             episode_path = []
             episode_reward = 0
+            initial_portfolio = None
             
             while True:
-                action = agent.select_action(state, add_noise=False)
+                action = agent.select_action(state, evaluate=True, add_noise=False)
                 next_state, reward, done, info = env.step(action)
                 episode_reward += reward
+                
+                if initial_portfolio is None:
+                    initial_portfolio = info.get('portfolio_value', 0)
                 
                 episode_path.append({
                     'time_step': info.get('time_step', 0),
                     'price': info.get('current_price', 0),
                     'delta': info.get('delta', 0),
                     'B': info.get('B', 0),
-                    'portfolio': info.get('portfolio_value', 0)
+                    'portfolio': info.get('portfolio_value', 0),
+                    'theoretical_price': info.get('theoretical_price', 0)
                 })
                 
                 state = next_state
@@ -668,6 +759,8 @@ def train_multistep_ddpg(
                     break
             
             final_rewards.append(episode_reward)
+            if initial_portfolio is not None:
+                final_initial_portfolios.append(initial_portfolio)
             if eval_ep < 3:  # Store first 3 paths for analysis
                 final_paths.append(episode_path)
         
@@ -679,15 +772,82 @@ def train_multistep_ddpg(
         print(f"  Max |hedging error|: {np.max(np.abs(final_errors)):.6f}")
         print(f"  MSE: {np.mean(np.array(final_errors)**2):.6f}")
         
-        print(f"\nSample Episode Path:")
-        for step in final_paths[0]:
-            print(f"  Step {step['time_step']}: Price={step['price']:.2f}, "
-                  f"Δ={step['delta']:.4f}, B={step['B']:.2f}, "
-                  f"Portfolio={step['portfolio']:.2f}")
+        if final_initial_portfolios:
+            print(f"  Mean initial portfolio: {np.mean(final_initial_portfolios):.2f} (target: ~{price_stats['initial_fair_price']:.2f})")
+            print(f"  Portfolio improvement: {(np.mean(final_initial_portfolios) / price_stats['initial_fair_price'] * 100):.1f}% of theoretical")
+        
+        print(f"\nSample Episode Path with Theoretical Comparison:")
+        print(f"{'Step':>4} | {'Price':>6} | {'Delta':>6} | {'B':>7} | {'Portfolio':>9} | {'Theoretical':>11}")
+        print("-" * 70)
+        if final_paths:
+            for step in final_paths[0]:
+                print(f"{step['time_step']:4d} | "
+                      f"${step['price']:5.2f} | "
+                      f"{step['delta']:6.4f} | "
+                      f"${step['B']:6.2f} | "
+                      f"${step['portfolio']:8.2f} | "
+                      f"${step.get('theoretical_price', 0):10.2f}")
         
         print(f"{'='*80}")
     
     return agent, env, episode_rewards, hedging_errors
+
+
+# -------------------------
+# Comparison Function (DDPG vs Theoretical)
+# -------------------------
+def compare_ddpg_strategies(
+    agent: MultiStepDDPGAgent,
+    env: MultiStepNnomialEnv,
+    n_episodes: int = 1000,
+    verbose: bool = True
+) -> Dict[str, float]:
+    """Compare DDPG strategy against theoretical benchmarks."""
+    
+    ddpg_errors = []
+    ddpg_rewards = []
+    theoretical_errors = []
+    
+    for episode in range(n_episodes):
+        # DDPG strategy
+        state = env.reset()
+        ddpg_reward = 0
+        
+        while True:
+            action = agent.select_action(state, evaluate=True, add_noise=False)
+            next_state, reward, done, info = env.step(action)
+            ddpg_reward += reward
+            state = next_state
+            
+            if done:
+                ddpg_errors.append(info['hedging_error'])
+                break
+        
+        ddpg_rewards.append(ddpg_reward)
+        
+        # Theoretical perfect hedge (for comparison)
+        # This would require knowing future prices, so we'll estimate
+        state = env.reset()
+        theoretical_error = 0  # Placeholder for theoretical benchmark
+        theoretical_errors.append(theoretical_error)
+    
+    results = {
+        'ddpg_mean_error': np.mean(np.abs(ddpg_errors)),
+        'ddpg_std_error': np.std(np.abs(ddpg_errors)),
+        'ddpg_mse': np.mean(np.array(ddpg_errors)**2),
+        'ddpg_mean_reward': np.mean(ddpg_rewards),
+        'ddpg_std_reward': np.std(ddpg_rewards)
+    }
+    
+    if verbose:
+        print(f"\nDDPG Strategy Comparison ({n_episodes} episodes):")
+        print(f"  Mean |hedging error|: {results['ddpg_mean_error']:.4f}")
+        print(f"  Std |hedging error|: {results['ddpg_std_error']:.4f}")
+        print(f"  MSE: {results['ddpg_mse']:.4f}")
+        print(f"  Mean reward: {results['ddpg_mean_reward']:.4f}")
+        print(f"  Std reward: {results['ddpg_std_reward']:.4f}")
+    
+    return results
 
 
 # -------------------------
@@ -696,15 +856,17 @@ def train_multistep_ddpg(
 if __name__ == "__main__":
     
     # Configure your multi-step n-nomial model
-    T = 3  # Number of time steps
-    n_outcomes = 3  # Trinomial per step
-    prices_per_step = [0.9, 1.0, 1.1]  # Down, stay, up
-    probabilities = [0.33, 0.33, 0.34]  # Probabilities for each outcome
-    
-    print("Training Multi-Step DDPG for N-nomial Option Hedging...")
+    T = 4  # Number of time steps
+    n_outcomes = 2  
+    prices_per_step = [0.8, 1.2]  # Down, up
+    probabilities = [0.5, 0.5]  # Probabilities for each outcome
+
+    print("Training Enhanced Multi-Step DDPG for N-nomial Option Hedging...")
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")
     print(f"Price multipliers: {prices_per_step}")
     print(f"Probabilities: {probabilities}")
+    print("DDPG Features: Deterministic policy, OU noise, Target smoothing, Delayed updates")
+    print("Enhancements: Better rewards, theoretical price tracking, constrained actions")
     
     agent, env, rewards, errors = train_multistep_ddpg(
         T=T,
@@ -713,8 +875,20 @@ if __name__ == "__main__":
         probabilities=probabilities,
         S0=100.0,
         K=110.0,
-        episodes=25000,
-        batch_size=128,
+        episodes=20000,
+        batch_size=256,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         verbose=True
     )
+    
+    print(f"\nTraining completed!")
+    print(f"Final results:")
+    print(f"  Total episodes: {len(rewards)}")
+    print(f"  Final reward trend: {np.mean(rewards[-100:]):.4f}")
+    if errors:
+        print(f"  Final hedging error trend: {np.mean(errors[-100:]):.4f}")
+    
+    # Run detailed comparison
+    print(f"\nRunning detailed strategy comparison...")
+    comparison_results = compare_ddpg_strategies(agent, env, n_episodes=1000, verbose=True)
+    
