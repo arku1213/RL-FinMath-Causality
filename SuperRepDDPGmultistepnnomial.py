@@ -172,9 +172,12 @@ class MultiStepNnomialEnv:
             elif portfolio_deviation > target_portfolio * 0.2:  # More than 20% deviation  
                 portfolio_size_penalty = -0.02 * portfolio_deviation
             
+            # NEW: Add intermediate reward shaping for better tracking
+            tracking_reward = -abs(self.portfolio_value - theoretical_price) * 0.01
+            
             # FIXED: Remove problematic penalties that caused over-hedging
-            # Just use simple rebalancing cost + portfolio size constraint
-            reward = rebalancing_cost + portfolio_size_penalty
+            # Just use simple rebalancing cost + portfolio size constraint + tracking
+            reward = rebalancing_cost + portfolio_size_penalty + tracking_reward
             
             # Store previous delta for next step
             self.previous_delta = delta
@@ -203,6 +206,7 @@ class MultiStepNnomialEnv:
                 'time_step': self.current_time,
                 'rebalancing_cost': rebalancing_cost,
                 'portfolio_size_penalty': portfolio_size_penalty,
+                'tracking_reward': tracking_reward,
                 'theoretical_price': theoretical_price,
                 'target_portfolio': target_portfolio
             }
@@ -300,7 +304,7 @@ class ReplayBuffer:
 class CriticNetwork(nn.Module):
     """Critic network for DDPG - estimates Q(s,a)."""
     
-    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256]):
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [512, 512, 256]):
         super().__init__()
         
         input_dim = obs_dim + act_dim
@@ -341,7 +345,7 @@ class CriticNetwork(nn.Module):
 class ActorNetwork(nn.Module):
     """Actor network for DDPG - deterministic policy."""
     
-    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256], strike_price: float = 110.0):
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [512, 512, 256], strike_price: float = 110.0):
         super().__init__()
         self.K = strike_price
         
@@ -398,7 +402,7 @@ class ActorNetwork(nn.Module):
 class OUNoise:
     """Ornstein-Uhlenbeck process for action noise in DDPG."""
     
-    def __init__(self, size: int, mu: float = 0.0, theta: float = 0.15, sigma: float = 0.2):
+    def __init__(self, size: int, mu: float = 0.0, theta: float = 0.15, sigma: float = 0.1):
         self.mu = mu * np.ones(size)
         self.theta = theta
         self.sigma = sigma
@@ -424,21 +428,23 @@ class MultiStepDDPGAgent:
     def __init__(self,
                  obs_dim: int,
                  act_dim: int,
-                 hidden_dims: List[int] = [256, 256],
-                 lr_actor: float = 1e-4,
-                 lr_critic: float = 3e-4,
+                 hidden_dims: List[int] = [512, 512, 256],
+                 lr_actor: float = 5e-5,
+                 lr_critic: float = 1e-4,
                  gamma: float = 0.99,
-                 tau: float = 0.005,
-                 noise_std: float = 0.2,
+                 tau: float = 0.001,
+                 noise_std: float = 0.1,
                  noise_clip: float = 0.5,
                  device: str = 'cpu',
-                 strike_price: float = 110.0):
+                 strike_price: float = 110.0,
+                 update_frequency: int = 4):
         
         self.device = device
         self.gamma = gamma
         self.tau = tau
         self.noise_std = noise_std
         self.noise_clip = noise_clip
+        self.update_frequency = update_frequency
         
         # Networks
         self.actor = ActorNetwork(obs_dim, act_dim, hidden_dims, strike_price=strike_price).to(device)
@@ -523,9 +529,9 @@ class MultiStepDDPGAgent:
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
         self.critic_optimizer.step()
         
-        # Update Actor (delayed - every 2 steps like TD3)
+        # Update Actor (delayed - every update_frequency steps like TD3)
         actor_loss = torch.tensor(0.0, device=self.device)
-        if self.training_step % 2 == 0:
+        if self.training_step % self.update_frequency == 0:
             predicted_actions = self.actor(states)
             actor_loss = -self.critic(states, predicted_actions).mean()
             
@@ -561,10 +567,10 @@ def train_multistep_ddpg(
     probabilities: List[float] = [0.25, 0.5, 0.25],
     S0: float = 100.0,
     K: float = 110.0,
-    episodes: int = 20000,
-    batch_size: int = 256,
+    episodes: int = 30000,
+    batch_size: int = 128,
     buffer_size: int = 100000,
-    hidden_dims: List[int] = [256, 256],
+    hidden_dims: List[int] = [512, 512, 256],
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     seed: int = 42,
     verbose: bool = True
@@ -599,8 +605,10 @@ def train_multistep_ddpg(
         print(f"Probabilities: {probabilities}")
         print(f"Implied volatility: {price_stats['implied_volatility']:.4f}")
         print(f"Theoretical initial fair price: ${price_stats['initial_fair_price']:.2f}")
-        print(f"Enhanced rewards: Portfolio realism, Delta magnitude, Missed hedge penalties")
+        print(f"Enhanced rewards: Portfolio realism, Delta magnitude, Missed hedge penalties, Tracking rewards")
         print(f"DDPG features: Deterministic policy, Target policy smoothing, Delayed updates")
+        print(f"Improvements: Larger networks ({hidden_dims}), Conservative learning rates")
+        print(f"Training: {episodes} episodes, batch size {batch_size}")
         print(f"{'='*80}\n")
     
     # Create agent
@@ -658,7 +666,7 @@ def train_multistep_ddpg(
         episode_lengths.append(episode_length)
         
         # Enhanced logging
-        if verbose and episode % 2500 == 0:
+        if verbose and episode % 3000 == 0:
             # Evaluate current policy
             eval_rewards = []
             eval_errors = []
@@ -875,8 +883,8 @@ if __name__ == "__main__":
         probabilities=probabilities,
         S0=100.0,
         K=110.0,
-        episodes=20000,
-        batch_size=256,
+        episodes=30000,
+        batch_size=128,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         verbose=True
     )
@@ -892,3 +900,19 @@ if __name__ == "__main__":
     print(f"\nRunning detailed strategy comparison...")
     comparison_results = compare_ddpg_strategies(agent, env, n_episodes=1000, verbose=True)
     
+    print(f"\nDDPG Agent Analysis:")
+    print(f"  The DDPG agent uses a deterministic policy with exploration noise")
+    print(f"  Target networks provide stability during training")
+    print(f"  Delayed policy updates (every 2 steps) prevent instability")
+    print(f"  Ornstein-Uhlenbeck noise provides correlated exploration")
+    print(f"  Action constraints ensure realistic hedging positions")
+    
+    print(f"\nKey DDPG vs SAC Differences:")
+    print(f"  - DDPG: Deterministic policy + exploration noise")
+    print(f"  - SAC:  Stochastic policy + entropy regularization")
+    print(f"  - DDPG: Single critic network (with target)")
+    print(f"  - SAC:  Twin critic networks for overestimation bias")
+    print(f"  - DDPG: OU noise for temporal correlation")
+    print(f"  - SAC:  Gaussian policy with learnable temperature")
+    
+    print(f"\nAgent saved and ready for use.")
