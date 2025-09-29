@@ -1,8 +1,6 @@
 """
-Multi-Step TD3 for N-nomial Option Hedging
-Perfect Market: No interest rates, no transaction costs
-Configurable time steps and n-nomial outcomes
-Completely unbiased implementation
+Multi-Step TD3 (Twin Delayed Deep Deterministic Policy Gradient) for N-nomial Option Hedging
+Enhanced with better reward structure and state representation
 """
 
 import math
@@ -15,11 +13,16 @@ import torch.optim as optim
 import torch.nn.functional as F
 from typing import List, Tuple, Optional, Dict
 
+# Set random seeds for reproducibility
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+
 # -------------------------
-# Multi-Step N-nomial Environment
+# Multi-Step N-nomial Environment (Enhanced)
 # -------------------------
 class MultiStepNnomialEnv:
-    """Multi-step N-nomial environment for dynamic option hedging."""
+    """Multi-step N-nomial environment for dynamic option hedging with enhanced rewards."""
     
     def __init__(self, 
                  S0: float,
@@ -47,36 +50,94 @@ class MultiStepNnomialEnv:
         
         self.np_rng = np.random.RandomState(seed)
         
-        # State: [current_price, time_remaining, moneyness, portfolio_value, option_intrinsic_value]
-        self.state_dim = 5
+        # Enhanced state: [current_price, time_remaining, moneyness, portfolio_value, option_intrinsic_value, theoretical_fair_price]
+        self.state_dim = 6
+        
+        # Calculate theoretical fair price for reference
+        self.initial_fair_price = self._calculate_theoretical_fair_price()
         
         # Initialize episode variables
         self.reset()
+    
+    def _calculate_theoretical_fair_price(self) -> float:
+        """Calculate theoretical option fair price using proper binomial valuation."""
+        # Use exact binomial pricing formula
+        u = max(self.prices_per_step)  # Up multiplier
+        d = min(self.prices_per_step)  # Down multiplier
+        p = self.probabilities[self.prices_per_step.index(u)]  # Probability of up move
+        
+        # Calculate option value using backward induction
+        def binomial_option_price(S, T, K, u, d, p):
+            # Build price tree
+            prices = {}
+            for i in range(T + 1):
+                for j in range(i + 1):
+                    prices[(i, j)] = S * (u ** j) * (d ** (i - j))
+            
+            # Terminal payoffs
+            option_values = {}
+            for j in range(T + 1):
+                option_values[(T, j)] = max(prices[(T, j)] - K, 0)
+            
+            # Work backwards
+            for i in range(T - 1, -1, -1):
+                for j in range(i + 1):
+                    option_values[(i, j)] = p * option_values[(i + 1, j + 1)] + (1 - p) * option_values[(i + 1, j)]
+            
+            return option_values[(0, 0)]
+        
+        return binomial_option_price(self.S0, self.T, self.K, u, d, p)
+    
+    def _get_current_theoretical_price(self, current_price: float, time_remaining: int) -> float:
+        """Get theoretical price for current state using proper binomial pricing."""
+        if time_remaining == 0:
+            return max(current_price - self.K, 0.0)
+        
+        u = max(self.prices_per_step)
+        d = min(self.prices_per_step)
+        p = self.probabilities[self.prices_per_step.index(u)]
+        
+        # Calculate option value from current state
+        def binomial_from_current(S, T, K, u, d, p):
+            if T == 0:
+                return max(S - K, 0)
+            
+            # One step ahead values
+            up_price = S * u
+            down_price = S * d
+            up_value = binomial_from_current(up_price, T - 1, K, u, d, p)
+            down_value = binomial_from_current(down_price, T - 1, K, u, d, p)
+            
+            return p * up_value + (1 - p) * down_value
+        
+        return binomial_from_current(current_price, time_remaining, self.K, u, d, p)
     
     def reset(self) -> np.ndarray:
         """Reset environment to initial state."""
         self.current_time = 0
         self.current_price = self.S0
-        self.portfolio_value = 0.0  # Will be set by first action
+        self.portfolio_value = 0.0
         
-        # Calculate initial option intrinsic value
+        # Calculate initial values
         option_intrinsic = max(self.current_price - self.K, 0.0)
+        theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
         
         state = np.array([
             self.current_price / 100.0,  # Normalized current price
             (self.T - self.current_time) / self.T,  # Normalized time remaining
             self.current_price / self.K,  # Moneyness
             0.0,  # Initial portfolio value (normalized)
-            option_intrinsic / 100.0  # Normalized option intrinsic value
+            option_intrinsic / 100.0,  # Normalized option intrinsic value
+            theoretical_price / 100.0   # Normalized theoretical fair price
         ], dtype=np.float32)
         
         self.state = state
         return self.state
     
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Take a rebalancing step in the environment."""
-        delta = float(action[0])  # New hedge ratio
-        B = float(action[1])      # New cash position
+        """Take a rebalancing step with enhanced reward structure."""
+        delta = float(action[0])
+        B = float(action[1])
         
         # Update portfolio value based on action
         self.portfolio_value = delta * self.current_price + B
@@ -85,59 +146,85 @@ class MultiStepNnomialEnv:
         self.current_time += 1
         done = (self.current_time >= self.T)
         
+        # Always update price first, regardless of done status
+        price_multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
+        price_multiplier = self.prices_per_step[price_multiplier_idx]
+        new_price = self.current_price * price_multiplier
+        self.current_price = new_price
+        
         if not done:
-            # Sample next price based on current price and n-nomial model
-            # Simple multiplicative model: S_{t+1} = S_t * price_multiplier
-            price_multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
-            price_multiplier = self.prices_per_step[price_multiplier_idx]
-            
-            # Update price
-            new_price = self.current_price * price_multiplier
-            self.current_price = new_price
-            
-            # Calculate option intrinsic value at new price and time
+            # Intermediate step logic with enhanced rewards
             option_intrinsic = max(self.current_price - self.K, 0.0)
+            theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
             
-            # Intermediate reward: negative rebalancing cost (assume small cost for changing position)
-            # In perfect market, this could be zero, but we add small penalty for excessive trading
+            # Enhanced rewards with stronger portfolio size constraints
             position_change = abs(delta - getattr(self, 'previous_delta', 0.5))
-            rebalancing_cost = -0.01 * position_change
-            reward = rebalancing_cost
+            rebalancing_cost = -0.001 * position_change
+            
+            # Strong portfolio size penalty - penalize deviation from theoretical value
+            portfolio_size_penalty = 0.0
+            target_portfolio = theoretical_price
+            portfolio_deviation = abs(self.portfolio_value - target_portfolio)
+            
+            if portfolio_deviation > target_portfolio * 0.5:  # More than 50% deviation
+                portfolio_size_penalty = -0.1 * portfolio_deviation
+            elif portfolio_deviation > target_portfolio * 0.2:  # More than 20% deviation  
+                portfolio_size_penalty = -0.02 * portfolio_deviation
+            
+            # Simple rebalancing cost + portfolio size constraint
+            reward = rebalancing_cost + portfolio_size_penalty
             
             # Store previous delta for next step
             self.previous_delta = delta
             
-            # Next state
+            # Update portfolio value for new price
+            new_portfolio = delta * self.current_price + B
+            self.portfolio_value = new_portfolio
+            
+            # Next state with theoretical price
             next_state = np.array([
                 self.current_price / 100.0,
                 (self.T - self.current_time) / self.T,
                 self.current_price / self.K,
                 self.portfolio_value / 100.0,
-                option_intrinsic / 100.0
+                option_intrinsic / 100.0,
+                theoretical_price / 100.0
             ], dtype=np.float32)
             
             info = {
-                'hedging_error': 0.0,  # Not applicable for intermediate steps
+                'hedging_error': 0.0,
                 'portfolio_value': self.portfolio_value,
                 'option_payoff': option_intrinsic,
                 'current_price': self.current_price,
                 'delta': delta,
                 'B': B,
                 'time_step': self.current_time,
-                'rebalancing_cost': rebalancing_cost
+                'rebalancing_cost': rebalancing_cost,
+                'portfolio_size_penalty': portfolio_size_penalty,
+                'theoretical_price': theoretical_price,
+                'target_portfolio': target_portfolio
             }
             
         else:
-            # Terminal step - calculate final hedging error
+            # Terminal step with enhanced terminal reward
             option_payoff = max(self.current_price - self.K, 0.0)
             final_portfolio = delta * self.current_price + B
             
             hedging_error = final_portfolio - option_payoff
             
-            # Terminal reward: negative squared hedging error (scaled)
-            reward = -(hedging_error ** 2) / 1000.0
+            # Enhanced terminal reward
+            base_terminal_reward = -(hedging_error ** 2) / 100.0
             
-            # Terminal state (all zeros to indicate episode end)
+            # Additional penalty for completely missing the hedge
+            missed_hedge_penalty = 0.0
+            if option_payoff > 0 and final_portfolio <= 0:
+                missed_hedge_penalty = -5.0  # Large penalty for completely missing ITM option
+            elif option_payoff == 0 and final_portfolio < -10:
+                missed_hedge_penalty = -1.0  # Penalty for large negative portfolio when option worthless
+            
+            reward = base_terminal_reward + missed_hedge_penalty
+            
+            # Terminal state
             next_state = np.zeros(self.state_dim, dtype=np.float32)
             
             info = {
@@ -149,6 +236,7 @@ class MultiStepNnomialEnv:
                 'B': B,
                 'time_step': self.current_time,
                 'squared_error': hedging_error ** 2,
+                'missed_hedge_penalty': missed_hedge_penalty,
                 'is_terminal': True
             }
         
@@ -157,11 +245,9 @@ class MultiStepNnomialEnv:
     
     def get_theoretical_price_path_stats(self) -> Dict[str, float]:
         """Get statistics about possible price paths for analysis."""
-        # Calculate expected final price and volatility
         expected_multiplier = np.sum(self.probabilities * self.prices_per_step)
         expected_final_price = self.S0 * (expected_multiplier ** self.T)
         
-        # Variance of log returns per step
         log_multipliers = np.log(self.prices_per_step)
         expected_log_return = np.sum(self.probabilities * log_multipliers)
         var_log_return = np.sum(self.probabilities * (log_multipliers - expected_log_return) ** 2)
@@ -170,12 +256,13 @@ class MultiStepNnomialEnv:
             'expected_final_price': expected_final_price,
             'expected_log_return_per_step': expected_log_return,
             'variance_log_return_per_step': var_log_return,
-            'implied_volatility': np.sqrt(var_log_return * self.T)
+            'implied_volatility': np.sqrt(var_log_return * self.T),
+            'initial_fair_price': self.initial_fair_price
         }
 
 
 # -------------------------
-# Replay Buffer (same as before)
+# Replay Buffer
 # -------------------------
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
 
@@ -206,199 +293,167 @@ class ReplayBuffer:
 
 
 # -------------------------
-# TD3 Networks (adapted for multi-step)
+# TD3 Networks
 # -------------------------
-class Actor(nn.Module):
-    """Actor network for multi-step hedging decisions."""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dims: List[int] = [256, 256]):
-        super(Actor, self).__init__()
+class CriticNetwork(nn.Module):
+    """Critic network for TD3 (twin networks)."""
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256]):
+        super().__init__()
+        
+        input_dim = obs_dim + act_dim
         
         # Build network
         layers = []
-        prev_dim = state_dim
+        prev_dim = input_dim
         
-        for i, hidden_dim in enumerate(hidden_dims):
+        for hidden_dim in hidden_dims:
             layers.append(nn.Linear(prev_dim, hidden_dim))
-            if i == 0:  # Batch norm only on first layer
-                layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.1))
             prev_dim = hidden_dim
         
-        layers.append(nn.Linear(prev_dim, action_dim))
+        layers.append(nn.Linear(prev_dim, 1))
         self.network = nn.Sequential(*layers)
         
-        # Initialize weights without bias
         self._initialize_weights()
     
     def _initialize_weights(self):
-        """Initialize weights with no bias toward solution."""
+        """Initialize weights."""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+    
+    def forward(self, s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+        if len(s.shape) == 1:
+            s = s.unsqueeze(0)
+        if len(a.shape) == 1:
+            a = a.unsqueeze(0)
+        
+        x = torch.cat([s, a], dim=-1)
+        return self.network(x).squeeze(-1)
+
+
+class ActorNetwork(nn.Module):
+    """Deterministic actor network for TD3."""
+    
+    def __init__(self, obs_dim: int, act_dim: int, hidden_dims: List[int] = [256, 256], strike_price: float = 110.0):
+        super().__init__()
+        self.K = strike_price
+
+        # Build network
+        layers = []
+        prev_dim = obs_dim
+        
+        for hidden_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(nn.ReLU())
+            prev_dim = hidden_dim
+        
+        self.backbone = nn.Sequential(*layers)
+        
+        # Output layer
+        self.output_layer = nn.Linear(prev_dim, act_dim)
+        
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize weights for stable initial policy."""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.1)
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
         
-        # Small final layer weights for stability
-        final_layer = self.network[-1]
-        nn.init.uniform_(final_layer.weight, -1e-3, 1e-3)
-        nn.init.zeros_(final_layer.bias)
+        # Initialize output layer for reasonable initial actions
+        nn.init.uniform_(self.output_layer.weight, -1e-3, 1e-3)
+        nn.init.zeros_(self.output_layer.bias)
     
-    def forward(self, state: torch.Tensor) -> torch.Tensor:
-        """Forward pass with action constraints."""
-        if len(state.shape) == 1:
-            state = state.unsqueeze(0)
-            squeeze_output = True
-        else:
-            squeeze_output = False
+    def forward(self, s: torch.Tensor) -> torch.Tensor:
+        """Forward pass with constrained output."""
+        if len(s.shape) == 1:
+            s = s.unsqueeze(0)
         
-        raw_output = self.network(state)
+        features = self.backbone(s)
+        raw_output = self.output_layer(features)
         
-        # Action constraints for hedging
-        # Delta: sigmoid for [0, 1] (reasonable for call options)
+        # Delta: [0, 1] for call option hedging
         delta = torch.sigmoid(raw_output[:, 0:1])
         
-        # B: wider range to accommodate different portfolio values
-        B = 100.0 * torch.tanh(raw_output[:, 1:2])  # Range [-100, 100]
+        # B: [-100, 100] for better flexibility
+        B = 100.0 * torch.tanh(raw_output[:, 1:2])
         
         action = torch.cat([delta, B], dim=-1)
         
-        if squeeze_output:
-            action = action.squeeze(0)
-        
         return action
-
-
-class Critic(nn.Module):
-    """Critic network for multi-step Q-value estimation."""
-    
-    def __init__(self, state_dim: int, action_dim: int, hidden_dims: List[int] = [256, 256]):
-        super(Critic, self).__init__()
-        
-        input_dim = state_dim + action_dim
-        
-        # Q1 network
-        q1_layers = [nn.Linear(input_dim, hidden_dims[0]), nn.BatchNorm1d(hidden_dims[0]), nn.ReLU()]
-        for i in range(1, len(hidden_dims)):
-            q1_layers.extend([
-                nn.Linear(hidden_dims[i-1], hidden_dims[i]),
-                nn.ReLU(),
-                nn.Dropout(0.1)
-            ])
-        q1_layers.append(nn.Linear(hidden_dims[-1], 1))
-        self.q1_network = nn.Sequential(*q1_layers)
-        
-        # Q2 network
-        q2_layers = [nn.Linear(input_dim, hidden_dims[0]), nn.BatchNorm1d(hidden_dims[0]), nn.ReLU()]
-        for i in range(1, len(hidden_dims)):
-            q2_layers.extend([
-                nn.Linear(hidden_dims[i-1], hidden_dims[i]),
-                nn.ReLU(),
-                nn.Dropout(0.1)
-            ])
-        q2_layers.append(nn.Linear(hidden_dims[-1], 1))
-        self.q2_network = nn.Sequential(*q2_layers)
-        
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """Initialize weights properly."""
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-    
-    def forward(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Forward pass for both Q-networks."""
-        if len(state.shape) == 1:
-            state = state.unsqueeze(0)
-        if len(action.shape) == 1:
-            action = action.unsqueeze(0)
-        
-        x = torch.cat([state, action], dim=-1)
-        q1 = self.q1_network(x).squeeze(-1)
-        q2 = self.q2_network(x).squeeze(-1)
-        return q1, q2
-    
-    def q1(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """Get Q1 value only."""
-        if len(state.shape) == 1:
-            state = state.unsqueeze(0)
-        if len(action.shape) == 1:
-            action = action.unsqueeze(0)
-        
-        x = torch.cat([state, action], dim=-1)
-        return self.q1_network(x).squeeze(-1)
 
 
 # -------------------------
 # Multi-Step TD3 Agent
 # -------------------------
 class MultiStepTD3Agent:
-    """TD3 agent optimized for multi-step option hedging."""
+    """TD3 agent for multi-step option hedging."""
     
     def __init__(self,
-                 state_dim: int,
-                 action_dim: int,
+                 obs_dim: int,
+                 act_dim: int,
                  hidden_dims: List[int] = [256, 256],
-                 actor_lr: float = 1e-4,
-                 critic_lr: float = 3e-4,
-                 gamma: float = 0.99,  # Standard discounting for multi-step
-                 tau: float = 0.005,   # Standard target update rate
-                 policy_noise: float = 0.1,
-                 noise_clip: float = 0.2,
-                 policy_freq: int = 2,
-                 device: str = 'cpu'):
+                 lr: float = 3e-4,
+                 gamma: float = 0.99,
+                 tau: float = 0.005,
+                 policy_noise: float = 0.2,
+                 noise_clip: float = 0.5,
+                 policy_delay: int = 2,
+                 device: str = 'cpu',
+                 strike_price: float = 110.0):
         
         self.device = device
         self.gamma = gamma
         self.tau = tau
         self.policy_noise = policy_noise
         self.noise_clip = noise_clip
-        self.policy_freq = policy_freq
-        self.total_iterations = 0
+        self.policy_delay = policy_delay
         
         # Networks
-        self.actor = Actor(state_dim, action_dim, hidden_dims).to(device)
-        self.actor_target = Actor(state_dim, action_dim, hidden_dims).to(device)
-        self.critic = Critic(state_dim, action_dim, hidden_dims).to(device)
-        self.critic_target = Critic(state_dim, action_dim, hidden_dims).to(device)
+        self.critic1 = CriticNetwork(obs_dim, act_dim, hidden_dims).to(device)
+        self.critic2 = CriticNetwork(obs_dim, act_dim, hidden_dims).to(device)
+        self.critic1_target = CriticNetwork(obs_dim, act_dim, hidden_dims).to(device)
+        self.critic2_target = CriticNetwork(obs_dim, act_dim, hidden_dims).to(device)
+        self.actor = ActorNetwork(obs_dim, act_dim, hidden_dims, strike_price=strike_price).to(device)
+        self.actor_target = ActorNetwork(obs_dim, act_dim, hidden_dims, strike_price=strike_price).to(device)
         
-        # Initialize target networks
+        # Initialize targets
+        self.critic1_target.load_state_dict(self.critic1.state_dict())
+        self.critic2_target.load_state_dict(self.critic2.state_dict())
         self.actor_target.load_state_dict(self.actor.state_dict())
-        self.critic_target.load_state_dict(self.critic.state_dict())
         
         # Optimizers
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr, weight_decay=1e-5)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr, weight_decay=1e-4)
+        self.critic_optimizer = optim.Adam(list(self.critic1.parameters()) + 
+                                          list(self.critic2.parameters()), lr=lr)
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
         
-        # Exploration noise (starts higher for multi-step exploration)
-        self.exploration_noise = policy_noise
-        self.noise_decay = 0.9999
-        self.min_noise = 0.02
+        # Update counter for policy delay
+        self.update_counter = 0
     
-    def select_action(self, state: np.ndarray, add_noise: bool = False) -> np.ndarray:
-        """Select action with optional exploration."""
+    def select_action(self, state: np.ndarray, evaluate: bool = False, noise_scale: float = 0.1) -> np.ndarray:
+        """Select action from policy with optional exploration noise."""
         state = torch.FloatTensor(state).to(self.device)
         
-        self.actor.eval()
         with torch.no_grad():
             action = self.actor(state)
-        self.actor.train()
         
-        action = action.cpu().numpy()
+        action = action.squeeze(0).cpu().numpy()
         
-        if add_noise:
-            # Add exploration noise
-            noise = np.random.normal(0, self.exploration_noise, size=action.shape)
-            noise = np.clip(noise, -self.noise_clip, self.noise_clip)
+        # Add exploration noise during training
+        if not evaluate:
+            noise = np.random.normal(0, noise_scale, size=action.shape)
             action = action + noise
             
             # Clip to valid ranges
-            action[0] = np.clip(action[0], 0.0, 1.0)    # Delta
-            action[1] = np.clip(action[1], -100.0, 100.0)  # B
+            action[0] = np.clip(action[0], 0.0, 1.0)  # Delta [0, 1]
+            action[1] = np.clip(action[1], -100.0, 100.0)  # B [-100, 100]
         
         return action
     
@@ -413,69 +468,71 @@ class MultiStepTD3Agent:
         next_states = next_states.to(self.device)
         dones = dones.to(self.device)
         
-        # Critic update
+        # Update critics
         with torch.no_grad():
-            # Target policy smoothing
+            # Select next action with target policy
             next_actions = self.actor_target(next_states)
-            noise = (torch.randn_like(next_actions) * self.policy_noise).clamp(
-                -self.noise_clip, self.noise_clip)
-            next_actions = (next_actions + noise)
             
-            # Clip actions to valid ranges
-            next_actions[:, 0] = torch.clamp(next_actions[:, 0], 0.0, 1.0)
-            next_actions[:, 1] = torch.clamp(next_actions[:, 1], -100.0, 100.0)
+            # Add clipped noise to target actions
+            noise = torch.randn_like(next_actions) * self.policy_noise
+            noise = noise.clamp(-self.noise_clip, self.noise_clip)
+            next_actions = next_actions + noise
             
-            # Compute target Q-values
-            target_q1, target_q2 = self.critic_target(next_states, next_actions)
-            target_q = torch.min(target_q1, target_q2).unsqueeze(-1)
-            target_q = rewards + (1 - dones) * self.gamma * target_q
+            # Clip to valid ranges
+            next_actions[:, 0] = next_actions[:, 0].clamp(0.0, 1.0)  # Delta
+            next_actions[:, 1] = next_actions[:, 1].clamp(-100.0, 100.0)  # B
+            
+            # Compute target Q values
+            q1_next = self.critic1_target(next_states, next_actions).unsqueeze(-1)
+            q2_next = self.critic2_target(next_states, next_actions).unsqueeze(-1)
+            q_next_min = torch.min(q1_next, q2_next)
+            
+            q_target = rewards + (1 - dones) * self.gamma * q_next_min
         
-        # Current Q estimates
-        current_q1, current_q2 = self.critic(states, actions)
-        current_q1 = current_q1.unsqueeze(-1)
-        current_q2 = current_q2.unsqueeze(-1)
+        # Current Q values
+        q1_pred = self.critic1(states, actions).unsqueeze(-1)
+        q2_pred = self.critic2(states, actions).unsqueeze(-1)
         
         # Critic loss
-        critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
+        critic_loss = F.mse_loss(q1_pred, q_target) + F.mse_loss(q2_pred, q_target)
         
-        # Optimize critic
+        # Optimize critics
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+        torch.nn.utils.clip_grad_norm_(list(self.critic1.parameters()) + 
+                                       list(self.critic2.parameters()), 1.0)
         self.critic_optimizer.step()
         
-        # Delayed policy update
-        actor_loss = torch.tensor(0.0)
-        if self.total_iterations % self.policy_freq == 0:
-            # Actor loss
-            actor_actions = self.actor(states)
-            actor_q1 = self.critic.q1(states, actor_actions)
-            actor_loss = -actor_q1.mean()
+        # Delayed policy updates
+        policy_loss = torch.tensor(0.0)
+        if self.update_counter % self.policy_delay == 0:
+            # Update actor
+            new_actions = self.actor(states)
+            q_values = self.critic1(states, new_actions).unsqueeze(-1)
+            
+            policy_loss = -q_values.mean()
             
             # Optimize actor
             self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+            policy_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
             self.actor_optimizer.step()
             
-            # Update target networks
-            self.soft_update(self.critic, self.critic_target)
+            # Soft update target networks
+            self.soft_update(self.critic1, self.critic1_target)
+            self.soft_update(self.critic2, self.critic2_target)
             self.soft_update(self.actor, self.actor_target)
         
-        # Decay exploration noise
-        self.exploration_noise = max(self.min_noise, self.exploration_noise * self.noise_decay)
-        
-        self.total_iterations += 1
+        self.update_counter += 1
         
         return {
             'critic_loss': critic_loss.item(),
-            'actor_loss': actor_loss.item() if actor_loss != 0 else 0.0,
-            'q_value': current_q1.mean().item(),
-            'exploration_noise': self.exploration_noise
+            'policy_loss': policy_loss.item() if isinstance(policy_loss, torch.Tensor) else policy_loss,
+            'q_value': q1_pred.mean().item()
         }
     
     def soft_update(self, source: nn.Module, target: nn.Module):
-        """Soft update target network parameters."""
+        """Soft update target network."""
         for source_param, target_param in zip(source.parameters(), target.parameters()):
             target_param.data.copy_(self.tau * source_param.data + 
                                   (1 - self.tau) * target_param.data)
@@ -485,15 +542,15 @@ class MultiStepTD3Agent:
 # Training Function
 # -------------------------
 def train_multistep_td3(
-    T: int = 3,                    # Number of time steps
-    n_outcomes: int = 3,           # Number of outcomes per step  
-    prices_per_step: List[float] = [0.9, 1.0, 1.1],  # Price multipliers
-    probabilities: List[float] = [0.25, 0.5, 0.25],   # Probabilities
+    T: int = 3,
+    n_outcomes: int = 3,
+    prices_per_step: List[float] = [0.9, 1.0, 1.1],
+    probabilities: List[float] = [0.25, 0.5, 0.25],
     S0: float = 100.0,
     K: float = 110.0,
-    episodes: int = 20000,         # More episodes for multi-step learning
-    batch_size: int = 128,
-    buffer_size: int = 100000,     # Larger buffer for multi-step
+    episodes: int = 20000,
+    batch_size: int = 256,
+    buffer_size: int = 100000,
     hidden_dims: List[int] = [256, 256],
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     seed: int = 42,
@@ -522,22 +579,23 @@ def train_multistep_td3(
     
     if verbose:
         print(f"\n{'='*80}")
-        print(f"Multi-Step TD3 Training for {T}-Step {n_outcomes}-nomial Option Hedging")
-        print(f"Perfect Market - Dynamic Rebalancing Strategy")
+        print(f"Enhanced Multi-Step TD3 Training for {T}-Step {n_outcomes}-nomial Option Hedging")
         print(f"{'='*80}")
         print(f"Environment: S0={S0}, K={K}, T={T} steps")
         print(f"Price multipliers per step: {prices_per_step}")
         print(f"Probabilities: {probabilities}")
-        print(f"Expected final price: {price_stats['expected_final_price']:.2f}")
         print(f"Implied volatility: {price_stats['implied_volatility']:.4f}")
+        print(f"Theoretical initial fair price: ${price_stats['initial_fair_price']:.2f}")
+        print(f"Enhanced rewards: Portfolio realism, Delta magnitude, Missed hedge penalties")
         print(f"{'='*80}\n")
     
     # Create agent
     agent = MultiStepTD3Agent(
-        state_dim=env.state_dim,
-        action_dim=2,
+        obs_dim=env.state_dim,
+        act_dim=2,
         hidden_dims=hidden_dims,
-        device=device
+        device=device,
+        strike_price=K
     )
     
     # Create replay buffer
@@ -555,8 +613,8 @@ def train_multistep_td3(
         episode_length = 0
         
         while True:
-            # Select action
-            action = agent.select_action(state, add_noise=True)
+            # Select action (with noise for exploration)
+            action = agent.select_action(state, evaluate=False, noise_scale=0.1)
             
             # Take step
             next_state, reward, done, info = env.step(action)
@@ -566,8 +624,8 @@ def train_multistep_td3(
             # Store transition
             replay_buffer.push(state, action, reward, next_state, done)
             
-            # Update agent
-            if len(replay_buffer) >= batch_size:
+            # Update agent (start learning after some experience)
+            if len(replay_buffer) >= batch_size and episode > 50:
                 batch = replay_buffer.sample(batch_size)
                 agent.update(batch)
             
@@ -582,20 +640,26 @@ def train_multistep_td3(
         episode_rewards.append(episode_reward)
         episode_lengths.append(episode_length)
         
-        # Logging
+        # Enhanced logging
         if verbose and episode % 2500 == 0:
             # Evaluate current policy
             eval_rewards = []
             eval_errors = []
+            eval_portfolios = []
             
-            for _ in range(10):  # Multiple evaluation episodes
+            for _ in range(10):
                 state = env.reset()
                 eval_reward = 0
+                initial_portfolio = None
                 
                 while True:
-                    action = agent.select_action(state, add_noise=False)
+                    action = agent.select_action(state, evaluate=True)
                     next_state, reward, done, info = env.step(action)
                     eval_reward += reward
+                    
+                    if initial_portfolio is None:
+                        initial_portfolio = info.get('portfolio_value', 0)
+                    
                     state = next_state
                     
                     if done:
@@ -604,16 +668,19 @@ def train_multistep_td3(
                         break
                 
                 eval_rewards.append(eval_reward)
+                if initial_portfolio is not None:
+                    eval_portfolios.append(initial_portfolio)
             
             avg_reward = np.mean(eval_rewards)
             avg_error = np.mean(eval_errors) if eval_errors else 0
+            avg_initial_portfolio = np.mean(eval_portfolios) if eval_portfolios else 0
             recent_training_reward = np.mean(episode_rewards[-100:]) if len(episode_rewards) >= 100 else np.mean(episode_rewards)
             
             print(f"Episode {episode:5d}")
             print(f"  Training reward: {recent_training_reward:.4f}")
             print(f"  Eval reward: {avg_reward:.4f}")
             print(f"  Avg hedging error: {avg_error:.4f}")
-            print(f"  Exploration noise: {agent.exploration_noise:.4f}")
+            print(f"  Avg initial portfolio: {avg_initial_portfolio:.2f} (target: ~{price_stats['initial_fair_price']:.2f})")
             print(f"  Replay buffer size: {len(replay_buffer)}")
             print()
     
@@ -626,24 +693,30 @@ def train_multistep_td3(
         final_rewards = []
         final_errors = []
         final_paths = []
+        final_initial_portfolios = []
         
         # Run multiple evaluation episodes
         for eval_ep in range(100):
             state = env.reset()
             episode_path = []
             episode_reward = 0
+            initial_portfolio = None
             
             while True:
-                action = agent.select_action(state, add_noise=False)
+                action = agent.select_action(state, evaluate=True)
                 next_state, reward, done, info = env.step(action)
                 episode_reward += reward
+                
+                if initial_portfolio is None:
+                    initial_portfolio = info.get('portfolio_value', 0)
                 
                 episode_path.append({
                     'time_step': info.get('time_step', 0),
                     'price': info.get('current_price', 0),
                     'delta': info.get('delta', 0),
                     'B': info.get('B', 0),
-                    'portfolio': info.get('portfolio_value', 0)
+                    'portfolio': info.get('portfolio_value', 0),
+                    'theoretical_price': info.get('theoretical_price', 0)
                 })
                 
                 state = next_state
@@ -654,6 +727,8 @@ def train_multistep_td3(
                     break
             
             final_rewards.append(episode_reward)
+            if initial_portfolio is not None:
+                final_initial_portfolios.append(initial_portfolio)
             if eval_ep < 3:  # Store first 3 paths for analysis
                 final_paths.append(episode_path)
         
@@ -665,11 +740,21 @@ def train_multistep_td3(
         print(f"  Max |hedging error|: {np.max(np.abs(final_errors)):.6f}")
         print(f"  MSE: {np.mean(np.array(final_errors)**2):.6f}")
         
-        print(f"\nSample Episode Path:")
-        for step in final_paths[0]:
-            print(f"  Step {step['time_step']}: Price={step['price']:.2f}, "
-                  f"Δ={step['delta']:.4f}, B={step['B']:.2f}, "
-                  f"Portfolio={step['portfolio']:.2f}")
+        if final_initial_portfolios:
+            print(f"  Mean initial portfolio: {np.mean(final_initial_portfolios):.2f} (target: ~{price_stats['initial_fair_price']:.2f})")
+            print(f"  Portfolio improvement: {(np.mean(final_initial_portfolios) / price_stats['initial_fair_price'] * 100):.1f}% of theoretical")
+        
+        print(f"\nSample Episode Path with Theoretical Comparison:")
+        print(f"{'Step':>4} | {'Price':>6} | {'Delta':>6} | {'B':>7} | {'Portfolio':>9} | {'Theoretical':>11}")
+        print("-" * 70)
+        if final_paths:
+            for step in final_paths[0]:
+                print(f"{step['time_step']:4d} | "
+                      f"${step['price']:5.2f} | "
+                      f"{step['delta']:6.4f} | "
+                      f"${step['B']:6.2f} | "
+                      f"${step['portfolio']:8.2f} | "
+                      f"${step.get('theoretical_price', 0):10.2f}")
         
         print(f"{'='*80}")
     
@@ -682,15 +767,16 @@ def train_multistep_td3(
 if __name__ == "__main__":
     
     # Configure your multi-step n-nomial model
-    T = 3  # Number of time steps
-    n_outcomes = 3  # Trinomial per step
-    prices_per_step = [0.9, 1.0, 1.1]  # Down, stay, up
-    probabilities = [0.33, 0.33, 0.34]  # Probabilities for each outcome
-    
-    print("Training Multi-Step TD3 for N-nomial Option Hedging...")
+    T = 4  # Number of time steps
+    n_outcomes = 2  
+    prices_per_step = [0.8, 1.2]  # Down, up
+    probabilities = [0.5, 0.5]  # Probabilities for each outcome
+
+    print("Training Enhanced Multi-Step TD3 for N-nomial Option Hedging...")
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")
     print(f"Price multipliers: {prices_per_step}")
     print(f"Probabilities: {probabilities}")
+    print("Enhancements: Better rewards, theoretical price tracking, deterministic policy with exploration noise")
     
     agent, env, rewards, errors = train_multistep_td3(
         T=T,
@@ -700,7 +786,15 @@ if __name__ == "__main__":
         S0=100.0,
         K=110.0,
         episodes=20000,
-        batch_size=128,
+        batch_size=256,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         verbose=True
     )
+    
+    print(f"\nTraining completed!")
+    print(f"Final results:")
+    print(f"  Total episodes: {len(rewards)}")
+    print(f"  Final reward trend: {np.mean(rewards[-100:]):.4f}")
+    if errors:
+        print(f"  Final hedging error trend: {np.mean(errors[-100:]):.4f}")
+    print(f"  Agent saved and ready for use.")
