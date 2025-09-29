@@ -220,46 +220,61 @@ class EpsilonGreedyBandit:
 class ThompsonSamplingBandit:
     """
     Thompson Sampling for continuous actions
-    Bayesian approach with UNINFORMED PRIOR
+    UNBIASED: Uniform prior (maximum entropy)
     """
     def __init__(self):
-        # Uninformed prior: wide distribution centered at midpoint
-        self.delta_mu = 0.5  # Center of [0, 1]
-        self.delta_sigma = 0.5  # Wide uncertainty
+        # Store all observed (action, reward) pairs
+        self.observations = []
         
-        self.B_mu = 0.0  # Center of reasonable range
-        self.B_sigma = 30.0  # Wide uncertainty
-        
-        self.history = []
+        # NO PRIOR BELIEF - we'll sample uniformly until we have data
         self.n_updates = 0
         
     def select_action(self, context):
-        """Sample from posterior"""
-        delta = np.random.normal(self.delta_mu, self.delta_sigma)
-        delta = np.clip(delta, 0, 1)
-        
-        B = np.random.normal(self.B_mu, self.B_sigma)
+        """Sample from posterior (or uniform if no data)"""
+        if len(self.observations) < 10:
+            # Pure uniform exploration at start (unbiased)
+            delta = np.random.uniform(0, 1)
+            B = np.random.uniform(-80, 50)
+        else:
+            # After collecting data, sample from empirical distribution
+            # Weight by softmax of rewards
+            deltas = [obs[0] for obs in self.observations]
+            Bs = [obs[1] for obs in self.observations]
+            rewards = np.array([obs[2] for obs in self.observations])
+            
+            # Softmax weights (higher reward = higher probability)
+            # Use log-sum-exp trick for numerical stability
+            rewards_shifted = rewards - rewards.max()  # Shift for stability
+            exp_rewards = np.exp(rewards_shifted / 0.5)  # Temperature = 0.5
+            
+            # Handle potential numerical issues
+            if np.any(np.isnan(exp_rewards)) or np.any(np.isinf(exp_rewards)):
+                # Fallback to uniform if numerical issues
+                weights = np.ones(len(self.observations)) / len(self.observations)
+            else:
+                weights = exp_rewards / exp_rewards.sum()
+            
+            # Sample from weighted distribution + noise for exploration
+            idx = np.random.choice(len(self.observations), p=weights)
+            delta = deltas[idx] + np.random.normal(0, 0.05)
+            B = Bs[idx] + np.random.normal(0, 2.0)
+            
+            # Clip to valid range
+            delta = np.clip(delta, 0, 1)
+            B = np.clip(B, -80, 50)
         
         return delta, B
     
     def update(self, context, delta, B, reward):
-        """Bayesian update (simplified)"""
-        self.history.append((delta, B, reward))
+        """Store observation (no parametric assumption)"""
+        self.observations.append((delta, B, reward))
         self.n_updates += 1
         
-        # Simple update: move toward good actions
-        if reward > -1.0:
-            lr = 1.0 / (self.n_updates ** 0.6)  # Decay learning rate
-            self.delta_mu = (1 - lr) * self.delta_mu + lr * delta
-            self.B_mu = (1 - lr) * self.B_mu + lr * B
-            
-            # Reduce uncertainty as we learn
-            self.delta_sigma *= 0.995
-            self.B_sigma *= 0.995
-            
-            # Don't let uncertainty go to zero
-            self.delta_sigma = max(0.01, self.delta_sigma)
-            self.B_sigma = max(0.5, self.B_sigma)
+        # Keep only recent observations to prevent memory explosion
+        if len(self.observations) > 1000:
+            # Remove worst 20%
+            self.observations.sort(key=lambda x: x[2])
+            self.observations = self.observations[200:]
 
 
 def train_bandit(bandit, env, algorithm_name, n_rounds=5000, print_every=500):
