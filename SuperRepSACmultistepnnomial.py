@@ -1,5 +1,6 @@
 """
 Multi-Step SAC (Soft Actor-Critic) for N-nomial Option Hedging
+Enhanced with better reward structure and state representation
 """
 
 import math
@@ -59,46 +60,57 @@ class MultiStepNnomialEnv:
         self.reset()
     
     def _calculate_theoretical_fair_price(self) -> float:
-        """Calculate theoretical option fair price using risk-neutral valuation."""
-        # Risk-neutral probability (equal to actual prob when r=0)
-        q = self.probabilities
+        """Calculate theoretical option fair price using proper binomial valuation."""
+        # Use exact binomial pricing formula
+        u = max(self.prices_per_step)  # Up multiplier
+        d = min(self.prices_per_step)  # Down multiplier
+        p = self.probabilities[self.prices_per_step.index(u)]  # Probability of up move
         
-        # Calculate expected payoff through all possible paths
-        expected_payoff = 0.0
-        
-        # Generate all possible final outcomes
-        from itertools import product
-        
-        # For simplicity, approximate with a few representative paths
-        # This is a rough estimate - could be made more precise
-        sample_paths = 1000
-        total_payoff = 0.0
-        
-        for _ in range(sample_paths):
-            price = self.S0
-            for step in range(self.T):
-                multiplier_idx = self.np_rng.choice(self.n_outcomes, p=self.probabilities)
-                price *= self.prices_per_step[multiplier_idx]
+        # Calculate option value using backward induction
+        def binomial_option_price(S, T, K, u, d, p):
+            # Build price tree
+            prices = {}
+            for i in range(T + 1):
+                for j in range(i + 1):
+                    prices[(i, j)] = S * (u ** j) * (d ** (i - j))
             
-            payoff = max(price - self.K, 0.0)
-            total_payoff += payoff
+            # Terminal payoffs
+            option_values = {}
+            for j in range(T + 1):
+                option_values[(T, j)] = max(prices[(T, j)] - K, 0)
+            
+            # Work backwards
+            for i in range(T - 1, -1, -1):
+                for j in range(i + 1):
+                    option_values[(i, j)] = p * option_values[(i + 1, j + 1)] + (1 - p) * option_values[(i + 1, j)]
+            
+            return option_values[(0, 0)]
         
-        return total_payoff / sample_paths
+        return binomial_option_price(self.S0, self.T, self.K, u, d, p)
     
     def _get_current_theoretical_price(self, current_price: float, time_remaining: int) -> float:
-        """Get theoretical price for current state (simplified approximation)."""
+        """Get theoretical price for current state using proper binomial pricing."""
         if time_remaining == 0:
             return max(current_price - self.K, 0.0)
         
-        # Simple approximation: scale initial fair price by moneyness and time
-        moneyness = current_price / self.K
-        time_factor = time_remaining / self.T
+        u = max(self.prices_per_step)
+        d = min(self.prices_per_step)
+        p = self.probabilities[self.prices_per_step.index(u)]
         
-        # Basic approximation - could be more sophisticated
-        base_value = max(current_price - self.K, 0.0)  # Intrinsic
-        time_value = self.initial_fair_price * time_factor * 0.5  # Rough time value
+        # Calculate option value from current state
+        def binomial_from_current(S, T, K, u, d, p):
+            if T == 0:
+                return max(S - K, 0)
+            
+            # One step ahead values
+            up_price = S * u
+            down_price = S * d
+            up_value = binomial_from_current(up_price, T - 1, K, u, d, p)
+            down_value = binomial_from_current(down_price, T - 1, K, u, d, p)
+            
+            return p * up_value + (1 - p) * down_value
         
-        return base_value + time_value
+        return binomial_from_current(current_price, time_remaining, self.K, u, d, p)
     
     def reset(self) -> np.ndarray:
         """Reset environment to initial state."""
@@ -145,24 +157,23 @@ class MultiStepNnomialEnv:
             option_intrinsic = max(self.current_price - self.K, 0.0)
             theoretical_price = self._get_current_theoretical_price(self.current_price, self.T - self.current_time)
             
-            # Original rebalancing cost
+            # Enhanced rewards with stronger portfolio size constraints
             position_change = abs(delta - getattr(self, 'previous_delta', 0.5))
             rebalancing_cost = -0.001 * position_change
             
-            # NEW: Portfolio realism penalty - penalize negative portfolios when they should be positive
-            portfolio_realism_penalty = 0.0
-            if theoretical_price > 5.0 and self.portfolio_value < 0:
-                portfolio_realism_penalty = -0.01 * abs(self.portfolio_value)
+            # FIXED: Strong portfolio size penalty - penalize deviation from theoretical value
+            portfolio_size_penalty = 0.0
+            target_portfolio = theoretical_price
+            portfolio_deviation = abs(self.portfolio_value - target_portfolio)
             
-            # NEW: Delta magnitude reward - encourage meaningful positions
-            delta_magnitude_reward = 0.0
-            if theoretical_price > 2.0:  # Only when option has significant value
-                if delta < 0.1:  # Penalize very small deltas when option should be hedged
-                    delta_magnitude_reward = -0.005
-                elif 0.2 < delta < 0.8:  # Reward reasonable delta ranges
-                    delta_magnitude_reward = 0.002
+            if portfolio_deviation > target_portfolio * 0.5:  # More than 50% deviation
+                portfolio_size_penalty = -0.1 * portfolio_deviation
+            elif portfolio_deviation > target_portfolio * 0.2:  # More than 20% deviation  
+                portfolio_size_penalty = -0.02 * portfolio_deviation
             
-            reward = rebalancing_cost + portfolio_realism_penalty + delta_magnitude_reward
+            # FIXED: Remove problematic penalties that caused over-hedging
+            # Just use simple rebalancing cost + portfolio size constraint
+            reward = rebalancing_cost + portfolio_size_penalty
             
             # Store previous delta for next step
             self.previous_delta = delta
@@ -190,9 +201,9 @@ class MultiStepNnomialEnv:
                 'B': B,
                 'time_step': self.current_time,
                 'rebalancing_cost': rebalancing_cost,
-                'portfolio_realism_penalty': portfolio_realism_penalty,
-                'delta_magnitude_reward': delta_magnitude_reward,
-                'theoretical_price': theoretical_price
+                'portfolio_size_penalty': portfolio_size_penalty,
+                'theoretical_price': theoretical_price,
+                'target_portfolio': target_portfolio
             }
             
         else:
@@ -806,6 +817,7 @@ if __name__ == "__main__":
     print(f"Configuration: {T} steps, {n_outcomes}-nomial per step")
     print(f"Price multipliers: {prices_per_step}")
     print(f"Probabilities: {probabilities}")
+    print("Enhancements: Better rewards, theoretical price tracking, higher exploration")
     
     agent, env, rewards, errors = train_multistep_sac(
         T=T,
