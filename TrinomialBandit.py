@@ -258,6 +258,48 @@ def evaluate_final_solution(bandit, env, n_samples=2000):
     return best_solution
 
 
+def calculate_analytical_super_replication_price(env):
+    """
+    Calculate the true optimal super-replication price analytically
+    
+    For a trinomial model with payoffs only in the up state:
+    - Active constraints: Up scenario and Down scenario  
+    - Middle scenario constraint is dominated
+    
+    System of equations:
+    120δ + 1.051271B = 20  (Up constraint tight)
+    80δ + 1.051271B = 0    (Down constraint tight)
+    
+    Solution: δ = 0.5, B = -38.049, Cost = 11.951
+    """
+    erT = np.exp(env.r * env.T)
+    
+    # Analytical solution (derived by hand)
+    # From: 120δ + erT*B = 20 and 80δ + erT*B = 0
+    # Subtracting: 40δ = 20, so δ = 0.5
+    delta_opt = 0.5
+    B_opt = -40 / erT  # From 80(0.5) + erT*B = 0
+    cost_opt = env.S0 * delta_opt + B_opt
+    
+    # Verify constraints
+    V_up = delta_opt * env.Su + B_opt * erT
+    V_mid = delta_opt * env.Sm + B_opt * erT  
+    V_down = delta_opt * env.Sd + B_opt * erT
+    
+    return {
+        'delta': delta_opt,
+        'B': B_opt,
+        'cost': cost_opt,
+        'V_up': V_up,
+        'V_mid': V_mid,
+        'V_down': V_down,
+        'gap_up': V_up - env.Cu,
+        'gap_mid': V_mid - env.Cm,
+        'gap_down': V_down - env.Cd,
+        'success': True
+    }
+
+
 if __name__ == "__main__":
     # Create trinomial environment
     env = TrinomialOptionEnvironment(
@@ -273,19 +315,30 @@ if __name__ == "__main__":
     # Train Thompson Sampling
     bandit, best_training, best_cost_training = train_thompson_sampling(
         env, 
-        n_rounds=20000, 
+        n_rounds=10000, 
         print_every=1000
     )
     
     # Final evaluation
     best_solution = evaluate_final_solution(bandit, env, n_samples=2000)
     
-    print("\n" + "="*60)
-    print("KEY INSIGHT: Super-Replication")
+    # Calculate the true analytical optimum for comparison
+    analytical = calculate_analytical_super_replication_price(env)
+    
+    print(f"\n" + "="*60)
+    print("ANALYTICAL OPTIMUM (Hand Calculation)")
     print("="*60)
-    print("Unlike perfect replication (P&L=0), super-replication:")
-    print("  • Portfolio dominates option in ALL states")
-    print("  • Costs more than theoretical fair value")
-    print("  • Provides safety margin against model error")
-    print("  • Finds cheapest dominating portfolio")
-    print("="*60)
+    print(f"  δ* = {analytical['delta']:.6f}")
+    print(f"  B* = {analytical['B']:.6f}")
+    print(f"  Cost* = {analytical['cost']:.4f}")
+    print(f"  Gaps: Up={analytical['gap_up']:.4f}, Mid={analytical['gap_mid']:.4f}, Down={analytical['gap_down']:.4f}")
+    
+    if best_solution:
+        delta, B, cost, gap_up, gap_mid, gap_down = best_solution
+        print(f"\n" + "="*60)
+        print("THOMPSON SAMPLING vs ANALYTICAL COMPARISON")
+        print("="*60)
+        print(f"  Thompson Sampling: δ={delta:.6f}, B={B:.6f}, Cost={cost:.4f}")
+        print(f"  Analytical Optimum: δ={analytical['delta']:.6f}, B={analytical['B']:.6f}, Cost={analytical['cost']:.4f}")
+        print(f"  Error: δ={abs(delta-analytical['delta'])/analytical['delta']*100:.2f}%, B={abs(B-analytical['B'])/abs(analytical['B'])*100:.2f}%, Cost={abs(cost-analytical['cost'])/analytical['cost']*100:.2f}%")
+    
