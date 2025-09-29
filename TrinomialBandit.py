@@ -273,7 +273,7 @@ if __name__ == "__main__":
     # Train Thompson Sampling
     bandit, best_training, best_cost_training = train_thompson_sampling(
         env, 
-        n_rounds=10000, 
+        n_rounds=20000, 
         print_every=1000
     )
     
