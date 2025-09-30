@@ -47,8 +47,27 @@ Day 9 - Thursday, September 25th:
 - Determined that one step n-nomial would be tricky
 - Moved onto multi-step n-nomial for SAC, TD3, PPO & DDPG -> SAC is the best
 
+Day 10 - Friday, September 26th:
+
+- Adapting multi-step n-nomial code to DDPG, TD3 & PPO
+- Made good progress, although models are getting stuck
+
+Day 11 - Monday, September 29th:
+
+- Looked into bandits and discovered that Thompson Sampling is the best bandit approach
+- Adapted code using Thompson Sampling for Binomial and Trinomial Case - works well
+
+Day 12 - Tuesday, September 30th:
+
+- Finished Co-op class assignments
+- Look into Thompson Sampling and code
+
+Day 13 - Wednesday, October 1st:
+
+- Make Thompson Sampling notes
+- Try adapting Thompson Sampling for n-nomial and look into higher steps
+- Try other examples for Thompson Sampling
+
 Next goals:
 
-- Expand model to higher periods (look into using C++)
-- "Curse of Dimensionality"
 - https://arxiv.org/pdf/2504.05521
