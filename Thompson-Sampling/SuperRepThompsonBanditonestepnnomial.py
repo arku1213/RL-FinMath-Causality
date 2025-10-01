@@ -3,19 +3,73 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from itertools import combinations
+from scipy.optimize import minimize
+
+def calculate_risk_neutral_probabilities(factors, r, T):
+    """
+    Calculate risk-neutral probabilities for given factors using optimization
+    
+    Constraints:
+    1. Sum to 1: Σ pᵢ = 1
+    2. Match expected return: Σ pᵢ × factorsᵢ = e^(rT)
+    3. Non-negative: All pᵢ ≥ 0
+    
+    Objective: Minimize deviation from uniform distribution (maximum entropy)
+    """
+    factors = np.array(factors)
+    n = len(factors)
+    target_return = np.exp(r * T)
+    
+    def objective(probs):
+        # Minimize deviation from uniform probabilities (maximum entropy)
+        uniform_prob = 1.0 / n
+        return np.sum((probs - uniform_prob)**2)
+    
+    def constraint_sum(probs):
+        return np.sum(probs) - 1.0
+    
+    def constraint_return(probs):
+        return np.sum(probs * factors) - target_return
+    
+    # Starting guess: uniform probabilities
+    x0 = np.ones(n) / n
+    
+    constraints = [
+        {'type': 'eq', 'fun': constraint_sum},
+        {'type': 'eq', 'fun': constraint_return}
+    ]
+    
+    bounds = [(0, 1) for _ in range(n)]
+    
+    result = minimize(objective, x0, method='SLSQP', 
+                     bounds=bounds, constraints=constraints)
+    
+    if result.success:
+        return result.x
+    else:
+        print(f"Warning: Optimization failed. Using uniform probabilities.")
+        return np.ones(n) / n
 
 class NnomialOptionEnvironment:
     """Generalized N-nomial model for option pricing with super-replication"""
-    def __init__(self, S0, K, r, T, factors, probabilities):
+    def __init__(self, S0, K, r, T, factors, probabilities=None):
         self.S0 = S0
         self.K = K
         self.r = r
         self.T = T
         
-        # Convert to numpy arrays for vectorized operations
+        # Convert factors to numpy array
         self.factors = np.array(factors)
-        self.probabilities = np.array(probabilities)
         self.N = len(self.factors)
+        
+        # Calculate risk-neutral probabilities if not provided
+        if probabilities is None:
+            print("Calculating risk-neutral probabilities...")
+            self.probabilities = calculate_risk_neutral_probabilities(factors, r, T)
+            print(f"Risk-neutral probabilities: {self.probabilities}")
+            print(f"Expected return check: {np.sum(self.probabilities * self.factors):.6f} vs target {np.exp(r*T):.6f}")
+        else:
+            self.probabilities = np.array(probabilities)
         
         # Validate inputs
         assert len(self.probabilities) == self.N, "Probabilities must match number of factors"
@@ -96,6 +150,7 @@ class NnomialOptionEnvironment:
 class ThompsonSamplingBandit:
     """
     Thompson Sampling for continuous actions
+    UNBIASED: Uniform prior (maximum entropy)
     """
     def __init__(self):
         # Store all observed (action, reward) pairs
@@ -322,8 +377,8 @@ if __name__ == "__main__":
     # Example: Trinomial model
     env = NnomialOptionEnvironment(
         S0=100, K=100, r=0.05, T=1.0,
-        factors=[1.2, 1.1, 1.0, 0.9, 0.8],
-        probabilities=[0.2, 0.2, 0.2, 0.2, 0.2]
+        factors=[1.2, 1.0, 0.8],
+        probabilities=[0.33, 0.34, 0.33]
     )
     
     # Train Thompson Sampling

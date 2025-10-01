@@ -2,10 +2,55 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from scipy.optimize import minimize
+
+def calculate_trinomial_risk_neutral_probabilities(u, m, d, r, T):
+    """
+    Calculate risk-neutral probabilities for trinomial model using optimization
+    
+    Constraints:
+    1. Sum to 1: pu + pm + pd = 1
+    2. Match expected return: pu*u + pm*m + pd*d = e^(rT)
+    3. Non-negative: All probabilities ≥ 0
+    
+    Objective: Minimize deviation from uniform distribution (maximum entropy)
+    """
+    factors = np.array([u, m, d])
+    target_return = np.exp(r * T)
+    
+    def objective(probs):
+        # Minimize deviation from uniform probabilities (maximum entropy)
+        uniform_prob = 1.0 / 3.0
+        return np.sum((probs - uniform_prob)**2)
+    
+    def constraint_sum(probs):
+        return np.sum(probs) - 1.0
+    
+    def constraint_return(probs):
+        return np.sum(probs * factors) - target_return
+    
+    # Starting guess: uniform probabilities
+    x0 = np.ones(3) / 3.0
+    
+    constraints = [
+        {'type': 'eq', 'fun': constraint_sum},
+        {'type': 'eq', 'fun': constraint_return}
+    ]
+    
+    bounds = [(0, 1) for _ in range(3)]
+    
+    result = minimize(objective, x0, method='SLSQP', 
+                     bounds=bounds, constraints=constraints)
+    
+    if result.success:
+        return result.x
+    else:
+        print(f"Warning: Optimization failed. Using uniform probabilities.")
+        return np.ones(3) / 3.0
 
 class TrinomialOptionEnvironment:
     """One-step trinomial model for option pricing with super-replication"""
-    def __init__(self, S0=100, K=100, r=0.05, T=1.0, u=1.2, d=0.8, m=1.0):
+    def __init__(self, S0=100, K=100, r=0.05, T=1.0, u=1.2, d=0.8, m=1.0, probabilities=None):
         self.S0 = S0
         self.K = K
         self.r = r    # Risk-free interest rate
@@ -24,12 +69,19 @@ class TrinomialOptionEnvironment:
         self.Cm = max(self.Sm - K, 0)
         self.Cd = max(self.Sd - K, 0)
         
-        # Risk-neutral probabilities (assuming they sum to 1)
-        # For trinomial, we need: pu + pm + pd = 1 and match first two moments
-        # Simplified: equal probabilities for now (can be made more sophisticated)
-        self.pu = 0.33
-        self.pm = 0.34
-        self.pd = 0.33
+        # Calculate risk-neutral probabilities if not provided
+        if probabilities is None:
+            print("Calculating risk-neutral probabilities...")
+            probs = calculate_trinomial_risk_neutral_probabilities(u, m, d, r, T)
+            self.pu, self.pm, self.pd = probs
+            print(f"Risk-neutral probabilities: pu={self.pu:.6f}, pm={self.pm:.6f}, pd={self.pd:.6f}")
+            print(f"Expected return check: {self.pu*u + self.pm*m + self.pd*d:.6f} vs target {np.exp(r*T):.6f}")
+        else:
+            self.pu, self.pm, self.pd = probabilities
+        
+        # Validate probabilities
+        assert abs(self.pu + self.pm + self.pd - 1.0) < 1e-10, "Probabilities must sum to 1"
+        assert self.pu >= 0 and self.pm >= 0 and self.pd >= 0, "Probabilities must be non-negative"
         
         # Theoretical option price (risk-neutral valuation)
         self.C0 = np.exp(-r * T) * (self.pu * self.Cu + self.pm * self.Cm + self.pd * self.Cd)
@@ -162,6 +214,7 @@ def train_thompson_sampling(env, n_rounds=5000, print_every=500):
     print(f"Stock: S0={env.S0}, Strike: K={env.K}")
     print(f"Moves: Up={env.Su}, Middle={env.Sm}, Down={env.Sd}")
     print(f"Payoffs: Cu={env.Cu}, Cm={env.Cm}, Cd={env.Cd}")
+    print(f"Probabilities: pu={env.pu:.4f}, pm={env.pm:.4f}, pd={env.pd:.4f}")
     print(f"Theoretical option price: {env.C0:.4f}")
     print("\nObjective: Find cheapest super-replicating portfolio")
     print("Constraint: Portfolio value ≥ Option payoff in ALL scenarios")
@@ -293,7 +346,7 @@ def calculate_analytical_super_replication_price(env):
 
 
 if __name__ == "__main__":
-    # Create trinomial environment
+    # Create trinomial environment with automatic risk-neutral probabilities
     env = TrinomialOptionEnvironment(
         S0=100,   # Initial stock price
         K=100,    # Strike price
@@ -302,13 +355,12 @@ if __name__ == "__main__":
         u=1.2,    # Up factor
         m=1.0,    # Middle factor (no change)
         d=0.8     # Down factor
+        # probabilities calculated automatically
     )
     
     # Train Thompson Sampling
     bandit, best_training, best_cost_training = train_thompson_sampling(
-        env, 
-        n_rounds=10000, 
-        print_every=1000
+        env, n_rounds=10000, print_every=1000
     )
     
     # Final evaluation
