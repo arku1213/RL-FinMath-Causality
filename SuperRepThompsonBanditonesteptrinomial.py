@@ -265,17 +265,10 @@ def calculate_analytical_super_replication_price(env):
     - Active constraints: Up scenario and Down scenario  
     - Middle scenario constraint is dominated
     
-    System of equations:
-    120δ + 1.051271B = 20  (Up constraint tight)
-    80δ + 1.051271B = 0    (Down constraint tight)
-    
-    Solution: δ = 0.5, B = -38.049, Cost = 11.951
     """
     erT = np.exp(env.r * env.T)
     
     # Analytical solution (derived by hand)
-    # From: 120δ + erT*B = 20 and 80δ + erT*B = 0
-    # Subtracting: 40δ = 20, so δ = 0.5
     delta_opt = 0.5
     B_opt = -40 / erT  # From 80(0.5) + erT*B = 0
     cost_opt = env.S0 * delta_opt + B_opt
