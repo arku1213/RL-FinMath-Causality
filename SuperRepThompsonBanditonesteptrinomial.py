@@ -8,18 +8,18 @@ class TrinomialOptionEnvironment:
     def __init__(self, S0=100, K=100, r=0.05, T=1.0, u=1.2, d=0.8, m=1.0):
         self.S0 = S0
         self.K = K
-        self.r = r
-        self.T = T
-        self.u = u    # Up factor
-        self.m = m    # Middle factor (usually 1.0 = no change)
-        self.d = d    # Down factor
-        
+        self.r = r    # Risk-free interest rate
+        self.T = T    # Time to maturity (in years)
+        self.u = u
+        self.m = m
+        self.d = d
+
         # Stock prices at maturity
         self.Su = S0 * u
         self.Sm = S0 * m
         self.Sd = S0 * d
-        
-        # Option payoffs (call option)
+
+        # Corresponding call option payoffs at time T
         self.Cu = max(self.Su - K, 0)
         self.Cm = max(self.Sm - K, 0)
         self.Cd = max(self.Sd - K, 0)
@@ -100,7 +100,6 @@ class TrinomialOptionEnvironment:
 class ThompsonSamplingBandit:
     """
     Thompson Sampling for continuous actions
-    UNBIASED: Uniform prior (maximum entropy)
     """
     def __init__(self):
         # Store all observed (action, reward) pairs
