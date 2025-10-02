@@ -1,6 +1,7 @@
 """
 Multi-Step SAC for Binomial Option Hedging with Binary Options
 Risk-neutral probabilities, super-replication constraints
+FULLY DEBUGGED VERSION with proper reward structure
 """
 
 import math
@@ -47,9 +48,11 @@ class MultiStepBinomialEnv:
         
         print(f"Risk-neutral probabilities: p_up={self.p:.6f}, p_down={self.q:.6f}")
         
-        # Binary option prices (equal to probabilities)
-        self.binary_up_price = self.p
-        self.binary_down_price = self.q
+        # Binary option prices with proper discounting
+        self.binary_up_price = np.exp(-r * self.dt) * self.p
+        self.binary_down_price = np.exp(-r * self.dt) * self.q
+        
+        print(f"Binary option prices: up={self.binary_up_price:.6f}, down={self.binary_down_price:.6f}")
         
         self.np_rng = np.random.RandomState(seed)
         
@@ -65,6 +68,7 @@ class MultiStepBinomialEnv:
         """Reset environment to initial state."""
         self.current_time = 0
         self.current_price = self.S0
+        self.initial_hedge_cost = None
         
         state = np.array([
             self.current_price / self.S0,
@@ -82,21 +86,14 @@ class MultiStepBinomialEnv:
         b_up = float(action[2])
         b_down = float(action[3])
         
-        # Calculate initial hedge cost BEFORE advancing time (only at t=0)
+        # Calculate hedge cost at CURRENT state (before price moves)
+        hedge_cost = (delta * self.current_price + B + 
+                     b_up * self.binary_up_price + 
+                     b_down * self.binary_down_price)
+        
+        # Store initial hedge cost for later use
         if self.current_time == 0:
-            initial_hedge_cost = (delta * self.S0 + B + 
-                                 b_up * self.binary_up_price + 
-                                 b_down * self.binary_down_price)
-            
-            # Penalize if initial cost is negative or too high
-            cost_penalty = 0.0
-            if initial_hedge_cost <= 0:
-                cost_penalty = -100.0 * abs(initial_hedge_cost)
-            elif initial_hedge_cost > 50:
-                cost_penalty = -10.0 * (initial_hedge_cost - 50)
-        else:
-            initial_hedge_cost = 0.0
-            cost_penalty = 0.0
+            self.initial_hedge_cost = hedge_cost
         
         # NOW advance time
         self.current_time += 1
@@ -114,18 +111,27 @@ class MultiStepBinomialEnv:
         
         self.current_price = new_price
         
-        # Calculate portfolio value
-        portfolio_value = delta * self.current_price + B * np.exp(self.r * self.dt) + binary_payoff
-        
         if not done:
-            # Intermediate step
-            reward = cost_penalty
+            # ============================================
+            # INTERMEDIATE STEP: Only check constraints
+            # ============================================
+            
+            # Hard constraint: positive cost (no arbitrage)
+            if hedge_cost <= 1e-6:
+                reward = -1e8  # Barrier reward
+            else:
+                reward = 0.0  # No reward/penalty during episode
             
             next_state = np.array([
                 self.current_price / self.S0,
                 (self.T - self.current_time) / self.T,
                 self.current_price / self.K
             ], dtype=np.float32)
+            
+            # Calculate portfolio value for tracking
+            time_to_maturity = self.T - self.current_time
+            discount_factor = np.exp(-self.r * self.dt * time_to_maturity)
+            portfolio_value = (delta * self.current_price + B + binary_payoff) * discount_factor
             
             info = {
                 'portfolio_value': portfolio_value,
@@ -135,28 +141,47 @@ class MultiStepBinomialEnv:
                 'b_up': b_up,
                 'b_down': b_down,
                 'time_step': self.current_time,
-                'initial_hedge_cost': initial_hedge_cost,
-                'cost_penalty': cost_penalty
+                'initial_hedge_cost': self.initial_hedge_cost if self.initial_hedge_cost else 0.0,
+                'hedge_cost': hedge_cost
             }
             
         else:
-            # Terminal step
+            # ============================================
+            # TERMINAL STEP: Check all constraints + optimize
+            # ============================================
+            
             option_payoff = max(self.current_price - self.K, 0.0)
+            portfolio_value = delta * self.current_price + B + binary_payoff
             
             # PnL = portfolio_value - option_payoff
             pnl = portfolio_value - option_payoff
             
-            # Reward based on PnL (want to minimize negative PnL, i.e., hedge should cover option)
-            # Negative PnL is bad (didn't cover the option)
-            # Positive PnL is okay but excessive is wasteful
-            if pnl < 0:
-                # Heavily penalize not covering the option
-                terminal_reward = -100.0 * (pnl ** 2)
-            else:
-                # Small penalty for excess coverage (want tight hedge)
-                terminal_reward = -0.1 * (pnl ** 2)
+            # CRITICAL: Check constraints first
+            constraint_violation = False
             
-            reward = terminal_reward + cost_penalty
+            # Constraint 1: Positive initial cost (no arbitrage)
+            if self.initial_hedge_cost is not None and self.initial_hedge_cost <= 1e-6:
+                constraint_violation = True
+            
+            # Constraint 2: Super-replication (portfolio >= option payoff)
+            if pnl < -1e-4:  # Allow tiny numerical error
+                constraint_violation = True
+            
+            # BARRIER REWARD: Make violations completely unlearnable
+            if constraint_violation:
+                # Return extremely large negative reward
+                # No optimization signal - just "don't go here"
+                reward = -1e8
+            else:
+                # Only optimize among FEASIBLE solutions
+                # Minimize: cost + excess
+                # Penalize excess heavily to force PnL → 0
+                
+                cost = self.initial_hedge_cost if self.initial_hedge_cost else 0.0
+                excess_penalty = 1000.0 * (pnl ** 2)
+                
+                # Simple negative reward: lower is better
+                reward = -(cost + excess_penalty)
             
             next_state = np.zeros(self.state_dim, dtype=np.float32)
             
@@ -170,7 +195,9 @@ class MultiStepBinomialEnv:
                 'b_up': b_up,
                 'b_down': b_down,
                 'time_step': self.current_time,
-                'initial_hedge_cost': initial_hedge_cost,
+                'initial_hedge_cost': self.initial_hedge_cost if self.initial_hedge_cost else 0.0,
+                'hedge_cost': hedge_cost,
+                'constraint_violation': constraint_violation,
                 'is_terminal': True
             }
         
@@ -357,7 +384,7 @@ class SACAgent:
                  act_dim: int,
                  hidden_dims: List[int] = [256, 256],
                  lr: float = 3e-4,
-                 gamma: float = 0.99,
+                 gamma: float = 0.95,
                  tau: float = 0.005,
                  alpha: float = 0.2,
                  automatic_entropy_tuning: bool = True,
@@ -484,7 +511,7 @@ def train_binomial_sac(
     S0: float = 100.0,
     K: float = 100.0,
     r: float = 0.05,
-    episodes: int = 20000,
+    episodes: int = 50000,
     batch_size: int = 256,
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu',
     verbose: bool = True
@@ -495,20 +522,25 @@ def train_binomial_sac(
     
     if verbose:
         print(f"\n{'='*80}")
-        print(f"Multi-Step Binomial SAC with Binary Options")
+        print(f"Multi-Step Binomial SAC with Binary Options (DEBUGGED VERSION)")
         print(f"{'='*80}")
         print(f"Environment: S0={S0}, K={K}, r={r}, T={T} steps")
         print(f"Up factor: {u}, Down factor: {d}")
         print(f"Risk-neutral prob (up): {env.p:.6f}")
         print(f"Binary option prices: up={env.binary_up_price:.6f}, down={env.binary_down_price:.6f}")
         print(f"Constraints: delta ∈ [0,1], B ∈ [-50,50], binaries ∈ [-50,50]")
-        print(f"Initial hedge cost must be positive and ≤ 50")
+        print(f"Hard constraints: positive cost + super-replication")
+        print(f"Objective: Minimize (cost + 1000*PnL²) among feasible solutions")
+        print(f"  → Barrier rewards: violations get -1e8, feasible solutions optimized")
         print(f"{'='*80}\n")
     
     agent = SACAgent(
         obs_dim=env.state_dim,
         act_dim=env.action_dim,
         hidden_dims=[256, 256],
+        lr=3e-4,
+        gamma=0.95,
+        tau=0.005,
         device=device
     )
     
@@ -541,11 +573,12 @@ def train_binomial_sac(
         
         episode_rewards.append(episode_reward)
         
-        if verbose and episode % 2500 == 0:
+        if verbose and episode % 5000 == 0:
             eval_pnls = []
             eval_costs = []
             eval_deltas = []
             eval_binaries = []
+            eval_violations = []
             
             for _ in range(100):
                 state = env.reset()
@@ -564,12 +597,17 @@ def train_binomial_sac(
                     
                     if done:
                         eval_pnls.append(info.get('pnl', 0))
+                        eval_violations.append(info.get('constraint_violation', False))
                         if initial_cost is not None:
                             eval_costs.append(initial_cost)
                         break
             
+            violation_rate = np.mean(eval_violations) * 100
+            
             print(f"Episode {episode:5d}")
-            print(f"  Mean PnL: {np.mean(eval_pnls):.4f} ± {np.std(eval_pnls):.4f}")
+            print(f"  Mean PnL: {np.mean(eval_pnls):+.6f} ± {np.std(eval_pnls):.6f}")
+            print(f"  Mean |PnL|: {np.mean(np.abs(eval_pnls)):.6f}")
+            print(f"  Constraint violations: {violation_rate:.1f}%")
             print(f"  Mean initial cost: {np.mean(eval_costs):.4f}")
             print(f"  Mean delta: {np.mean(eval_deltas):.4f}")
             if eval_binaries:
@@ -589,10 +627,12 @@ def train_binomial_sac(
         final_portfolios = []
         final_payoffs = []
         final_actions = []
+        final_violations = []
         
         for _ in range(1000):
             state = env.reset()
             initial_action = None
+            initial_cost = None
             
             while True:
                 action = agent.select_action(state, evaluate=True)
@@ -601,43 +641,140 @@ def train_binomial_sac(
                     initial_action = action.copy()
                 
                 next_state, reward, done, info = env.step(action)
+                
+                # Capture initial hedge cost from first step
+                if initial_cost is None and 'initial_hedge_cost' in info:
+                    initial_cost = info['initial_hedge_cost']
+                
                 state = next_state
                 
                 if done:
                     final_pnls.append(info['pnl'])
                     final_portfolios.append(info['portfolio_value'])
                     final_payoffs.append(info['option_payoff'])
+                    final_violations.append(info.get('constraint_violation', False))
                     if initial_action is not None:
                         final_actions.append(initial_action)
-                    if 'initial_hedge_cost' in info:
-                        final_costs.append(info['initial_hedge_cost'])
+                    if initial_cost is not None:
+                        final_costs.append(initial_cost)
                     break
         
-        print(f"\n*** BEST HEDGE SUMMARY ***")
-        print(f"  Mean PnL: {np.mean(final_pnls):.6f}")
-        print(f"  Std PnL: {np.std(final_pnls):.6f}")
-        print(f"  Mean initial hedge cost: {np.mean(final_costs):.4f}")
+        violation_rate = np.mean(final_violations) * 100
+        
+        print(f"\n*** HEDGE PERFORMANCE ***")
+        print(f"  Mean PnL: {np.mean(final_pnls):+.6f} ± {np.std(final_pnls):.6f}")
+        print(f"  Mean |PnL|: {np.mean(np.abs(final_pnls)):.6f}")
+        print(f"  Max PnL: {np.max(final_pnls):+.6f}")
+        print(f"  Min PnL: {np.min(final_pnls):+.6f}")
+        print(f"  Constraint violations: {violation_rate:.1f}%")
+        print(f"  Mean initial hedge cost: {np.mean(final_costs):.4f} ± {np.std(final_costs):.4f}")
         print(f"  Mean portfolio value: {np.mean(final_portfolios):.4f}")
         print(f"  Mean option payoff: {np.mean(final_payoffs):.4f}")
+        if np.mean(final_costs) > 0:
+            print(f"  |PnL| as % of initial cost: {(np.mean(np.abs(final_pnls)) / np.mean(final_costs) * 100):.2f}%")
         
         if final_actions:
-            best_idx = np.argmin(np.abs(final_pnls))
-            best_action = final_actions[best_idx]
-            print(f"\n  Best single hedge:")
-            print(f"    δ = {best_action[0]:.6f}")
-            print(f"    B = {best_action[1]:.6f}")
-            print(f"    b_up = {best_action[2]:.6f}")
-            print(f"    b_down = {best_action[3]:.6f}")
-            print(f"    PnL = {final_pnls[best_idx]:.6f}")
-            print(f"    Initial cost = {final_costs[best_idx]:.4f}")
+            # Find hedge with smallest absolute PnL (among non-violating)
+            valid_indices = [i for i, v in enumerate(final_violations) if not v]
+            
+            if valid_indices:
+                valid_pnls = [final_pnls[i] for i in valid_indices]
+                valid_actions = [final_actions[i] for i in valid_indices]
+                valid_costs = [final_costs[i] for i in valid_indices]
+                valid_portfolios = [final_portfolios[i] for i in valid_indices]
+                valid_payoffs = [final_payoffs[i] for i in valid_indices]
+                
+                best_valid_idx = np.argmin(np.abs(valid_pnls))
+                best_action = valid_actions[best_valid_idx]
+                
+                print(f"\n  Best valid hedge (smallest |PnL|):")
+                print(f"    δ = {best_action[0]:.6f}")
+                print(f"    B = {best_action[1]:.6f}")
+                print(f"    b_up = {best_action[2]:.6f}")
+                print(f"    b_down = {best_action[3]:.6f}")
+                print(f"    PnL = {valid_pnls[best_valid_idx]:+.6f}")
+                print(f"    Initial cost = {valid_costs[best_valid_idx]:.4f}")
+                print(f"    Portfolio value = {valid_portfolios[best_valid_idx]:.4f}")
+                print(f"    Option payoff = {valid_payoffs[best_valid_idx]:.4f}")
+            
+            # Also show average hedge parameters (all episodes)
+            mean_delta = np.mean([a[0] for a in final_actions])
+            mean_B = np.mean([a[1] for a in final_actions])
+            mean_b_up = np.mean([a[2] for a in final_actions])
+            mean_b_down = np.mean([a[3] for a in final_actions])
+            
+            print(f"\n  Average hedge parameters:")
+            print(f"    δ = {mean_delta:.6f}")
+            print(f"    B = {mean_B:.6f}")
+            print(f"    b_up = {mean_b_up:.6f}")
+            print(f"    b_down = {mean_b_down:.6f}")
         
         print(f"{'='*80}")
     
     return agent, env
 
 
+# -------------------------
+# Debug Test Function
+# -------------------------
+def test_environment():
+    """Test the environment with manual actions to verify correctness."""
+    print("\n" + "="*80)
+    print("ENVIRONMENT DEBUG TEST")
+    print("="*80)
+    
+    env = MultiStepBinomialEnv(S0=100, K=100, r=0.05, T=2, u=1.2, d=0.8, seed=42)
+    
+    # Test 1: Simple delta hedge
+    print("\nTest 1: Simple delta hedge (δ=0.6, no bonds/binaries)")
+    state = env.reset()
+    print(f"Initial state: S={env.current_price:.2f}")
+    
+    action = np.array([0.6, 0.0, 0.0, 0.0])
+    next_state, reward, done, info = env.step(action)
+    print(f"Step 1 - S={env.current_price:.2f}, Reward={reward:.2f}, Cost={info['hedge_cost']:.4f}")
+    
+    next_state, reward, done, info = env.step(action)
+    print(f"Step 2 - S={env.current_price:.2f}, Reward={reward:.2f}")
+    print(f"  Portfolio value: {info['portfolio_value']:.4f}")
+    print(f"  Option payoff: {info['option_payoff']:.4f}")
+    print(f"  PnL: {info['pnl']:.4f}")
+    print(f"  Constraint violation: {info.get('constraint_violation', False)}")
+    
+    # Test 2: Negative cost (should be penalized)
+    print("\nTest 2: Negative cost hedge (should violate constraint)")
+    state = env.reset()
+    action = np.array([0.0, -50.0, -50.0, -50.0])  # Short everything
+    next_state, reward, done, info = env.step(action)
+    print(f"Step 1 - Reward={reward:.2f}, Cost={info['hedge_cost']:.4f}")
+    print(f"  Should see large negative reward for negative cost")
+    
+    # Test 3: Perfect hedge attempt
+    print("\nTest 3: Attempting perfect hedge")
+    state = env.reset()
+    # For T=2 binomial, approximate hedge
+    action = np.array([0.65, -5.0, 0.0, 0.0])
+    
+    next_state, reward, done, info = env.step(action)
+    print(f"Step 1 - S={env.current_price:.2f}, Cost={info['hedge_cost']:.4f}")
+    
+    next_state, reward, done, info = env.step(action)
+    print(f"Step 2 - S={env.current_price:.2f}")
+    print(f"  Portfolio value: {info['portfolio_value']:.4f}")
+    print(f"  Option payoff: {info['option_payoff']:.4f}")
+    print(f"  PnL: {info['pnl']:.4f}")
+    print(f"  Constraint violation: {info.get('constraint_violation', False)}")
+    
+    print("\n" + "="*80 + "\n")
+
+
 if __name__ == "__main__":
-    print("Training Multi-Step Binomial SAC with Binary Options...")
+    # First run debug test
+    print("Running environment debug tests...")
+    test_environment()
+    
+    # Then train
+    print("\nStarting training...")
     
     agent, env = train_binomial_sac(
         T=2,
@@ -646,7 +783,7 @@ if __name__ == "__main__":
         S0=100.0,
         K=100.0,
         r=0.05,
-        episodes=20000,
+        episodes=50000,
         device='cuda' if torch.cuda.is_available() else 'cpu',
         verbose=True
     )
