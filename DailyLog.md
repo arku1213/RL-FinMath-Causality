@@ -67,6 +67,11 @@ Day 13 - Wednesday, October 1st:
 - Make Thompson Sampling notes
 - Try adapting Thompson Sampling for n-nomial and look into higher steps
 - Try other examples for Thompson Sampling
+- New objective: Expand into Binary options
+
+Day 14 - Thrusday, October 2nd:
+
+- Trying to optimize Binary option code to get best results
 
 Next goals:
 
