@@ -72,6 +72,12 @@ Day 13 - Wednesday, October 1st:
 Day 14 - Thrusday, October 2nd:
 
 - Trying to optimize Binary option code to get best results
+- Trying SAC for Multi-step binary option
+
+Day 15 - Friday, October 3rd:
+
+- SAC didn't work as expected, tried Thompson Sampling
+- Trying PPO
 
 Next goals:
 

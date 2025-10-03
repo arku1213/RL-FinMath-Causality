@@ -151,10 +151,13 @@ class MultiStepBinomialEnvironment:
             reward = -hedge_cost - penalty
         else:
             # Feasible solution: minimize cost + excess
-            # Penalize excess more heavily to encourage tighter hedges
+            # Penalize excess heavily to encourage tight hedges
             avg_gap = np.mean(gaps)
             max_gap = np.max(gaps)
-            reward = -hedge_cost - 1.0 * avg_gap - 0.5 * max_gap
+            std_gap = np.std(gaps)
+            
+            # Penalize: cost + average excess + maximum excess + variance
+            reward = -hedge_cost - 2.0 * avg_gap - 1.0 * max_gap - 0.5 * std_gap
         
         return reward, hedge_cost, gaps, min_gap, is_feasible
 
@@ -170,8 +173,8 @@ class ThompsonSamplingBandit:
     def select_action(self):
         """Sample action from posterior (or uniform initially)"""
         if len(self.observations) < 100:  # Initial exploration
-            delta = np.random.uniform(0, 1.5)
-            B = np.random.uniform(-80, 50)
+            delta = np.random.uniform(0, 2.0)  # Increased upper bound
+            B = np.random.uniform(-100, 50)  # Wider bond range
             b_up = np.random.uniform(-50, 50)
             b_down = np.random.uniform(-50, 50)
         else:
@@ -199,8 +202,8 @@ class ThompsonSamplingBandit:
             b_down = b_downs[idx] + np.random.normal(0, 2.0)
             
             # Clip to valid range
-            delta = np.clip(delta, 0, 1.5)
-            B = np.clip(B, -80, 50)
+            delta = np.clip(delta, 0, 2.0)  # Increased upper bound
+            B = np.clip(B, -100, 50)  # Wider bond range
             b_up = np.clip(b_up, -50, 50)
             b_down = np.clip(b_down, -50, 50)
         
@@ -365,7 +368,7 @@ if __name__ == "__main__":
         S0=100.0,
         K=100.0,
         r=0.05,
-        T=2,
+        T=6,
         u=1.2,
         d=0.8
     )
@@ -374,7 +377,7 @@ if __name__ == "__main__":
     print("Training Thompson Sampling...")
     bandit, best_training, best_cost_training = train_thompson_sampling(
         env, 
-        n_rounds=20000,  # More rounds for better convergence
+        n_rounds=100000,  # More rounds for better convergence
         print_every=2000
     )
     
