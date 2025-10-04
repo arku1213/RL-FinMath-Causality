@@ -161,12 +161,15 @@ class ThompsonSamplingBandit:
     
     NO BIAS: Uniform exploration, no hardcoded preferences
     Uses adaptive exploration noise that decreases over time
+    Scales initial exploration with dimensionality
     """
     def __init__(self, n_binaries):
         # Store all observed (action, reward) pairs
         self.observations = []
         self.n_updates = 0
         self.n_binaries = n_binaries
+        # Scale initial exploration with dimensionality (20 samples per dimension)
+        self.initial_exploration = 20 * n_binaries
         
     def select_action(self, context, exploration_factor=1.0):
         """
@@ -176,8 +179,9 @@ class ThompsonSamplingBandit:
         Returns:
             b_vector: numpy array of shape (n_binaries,)
         """
-        if len(self.observations) < 100:  # Initial exploration
+        if len(self.observations) < self.initial_exploration:
             # Pure uniform exploration at start - NO BIAS
+            # More exploration for higher dimensions
             b_vector = np.random.uniform(-10, 30, size=self.n_binaries)
         else:
             # After collecting data, sample from empirical distribution
@@ -394,8 +398,8 @@ def main_nnomial():
     
     # Example: 5-nomial model
     # User can change these parameters
-    N = 5
-    factors = [1.3, 1.1, 1.0, 0.9, 0.7]  # 5 scenarios
+    N = 10
+    factors = [1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]  # 10 scenarios
     
     print(f"Running {N}-nomial example...")
     print()
