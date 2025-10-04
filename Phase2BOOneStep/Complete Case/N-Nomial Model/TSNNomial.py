@@ -45,18 +45,15 @@ def calculate_risk_neutral_probabilities(factors, r, T):
         return np.ones(n) / n
 
 
-class TrinomialBinaryOptionEnvironment:
+class NnomialBinaryOptionEnvironment:
     """
-    Trinomial model with ONLY binary options and bonds for replication
+    N-nomial model with ONLY binary options (NO BOND) for replication
     
     Trading instruments:
-    - Bond: B (position in risk-free bond)
-    - Binary_1: b1 (number of binary options paying 1 if scenario 1 occurs)
-    - Binary_2: b2 (number of binary options paying 1 if scenario 2 occurs)
-    - Binary_3: b3 (number of binary options paying 1 if scenario 3 occurs)
+    - Binary_i: b_i (number of binary options paying 1 if scenario i occurs)
     
-    Complete market: 3 scenarios, 4 instruments (B, b1, b2, b3)
-    This is OVERCOMPLETE, so perfect replication is possible
+    Complete market: N scenarios, N instruments (b1, b2, ..., bN)
+    EXACTLY COMPLETE - unique solution exists
     
     NO BIAS: Uniform prior, no hardcoded preferences
     """
@@ -70,8 +67,7 @@ class TrinomialBinaryOptionEnvironment:
         self.factors = np.array(factors)
         self.N = len(self.factors)
         
-        # Must be trinomial
-        assert self.N == 3, "This implementation is for trinomial (N=3)"
+        print(f"Initializing {self.N}-nomial model...")
         
         # Calculate risk-neutral probabilities
         print("Calculating risk-neutral probabilities...")
@@ -88,57 +84,54 @@ class TrinomialBinaryOptionEnvironment:
         # Theoretical option price (risk-neutral valuation)
         self.C0 = np.exp(-r * T) * np.sum(self.probabilities * self.C_T)
         
-        # Store discount factor
-        self.erT = np.exp(self.r * self.T)
-        
         # Binary option prices = discounted risk-neutral probabilities
         # Price to buy a binary that pays 1 in scenario i
         self.binary_prices = np.exp(-r * T) * self.probabilities
         
-        # Precompute analytical "balanced" solution for style guidance
-        avg_payoff = np.mean(self.C_T)
-        self.B_target = avg_payoff / self.erT
-        self.b1_target = self.C_T[0] - self.B_target * self.erT
-        self.b2_target = self.C_T[1] - self.B_target * self.erT
-        self.b3_target = self.C_T[2] - self.B_target * self.erT
+        # Analytical solution (UNIQUE in exactly complete market)
+        self.b_target = self.C_T.copy()
         
         print(f"\nEnvironment Setup:")
         print(f"  S0 = {self.S0}, K = {self.K}, r = {self.r}, T = {self.T}")
-        print(f"  Factor 1 = {self.factors[0]}, Factor 2 = {self.factors[1]}, Factor 3 = {self.factors[2]}")
-        print(f"  S_1 = {self.S_T[0]:.2f}, S_2 = {self.S_T[1]:.2f}, S_3 = {self.S_T[2]:.2f}")
-        print(f"  C_1 = {self.C_T[0]:.2f}, C_2 = {self.C_T[1]:.2f}, C_3 = {self.C_T[2]:.2f}")
+        print(f"  Number of scenarios: {self.N}")
+        print(f"  Factors: {self.factors}")
+        print(f"  Stock prices at maturity: {self.S_T}")
+        print(f"  Option payoffs: {self.C_T}")
         print(f"  Theoretical option price: {self.C0:.4f}")
-        print(f"  Binary prices: p_1 = {self.binary_prices[0]:.4f}, p_2 = {self.binary_prices[1]:.4f}, p_3 = {self.binary_prices[2]:.4f}")
-        print(f"  Target solution (balanced): B = {self.B_target:.4f}, b1 = {self.b1_target:.4f}, b2 = {self.b2_target:.4f}, b3 = {self.b3_target:.4f}")
+        print(f"  Binary prices: {self.binary_prices}")
+        print(f"  Unique analytical solution: b = {self.b_target}")
     
     def get_context(self):
         """Get context for bandit (static in this case)"""
         return np.array([self.S0, self.K], dtype=np.float32)
     
-    def evaluate_replication(self, B, b1, b2, b3):
+    def evaluate_replication(self, b_vector):
         """
-        Evaluate how well a given (B, b1, b2, b3) replicates the option
+        Evaluate how well a given b_vector replicates the option
         
-        For EXACT replication, we want:
+        For EXACT replication in complete market:
         - Portfolio value = Option payoff in ALL scenarios
-        - Minimize initial cost
-        - Prefer solutions close to analytical "balanced" solution for consistency
+        - No bond, only binaries
+        - Unique solution: b_i = C_i
+        
+        Args:
+            b_vector: numpy array of shape (N,) with binary positions
         
         Returns:
-        - reward: Negative of squared replication error + cost penalty + style penalty
-        - cost: Initial cost of the portfolio
-        - errors: Replication errors in each scenario
+            reward: Negative of squared replication error + cost penalty
+            cost: Initial cost of the portfolio
+            errors: Replication errors in each scenario
         """
         
-        # Initial cost
-        cost = B + b1 * self.binary_prices[0] + b2 * self.binary_prices[1] + b3 * self.binary_prices[2]
+        # Ensure b_vector is numpy array
+        b_vector = np.array(b_vector)
         
-        # Portfolio values at maturity
-        V_scenario1 = B * self.erT + b1
-        V_scenario2 = B * self.erT + b2
-        V_scenario3 = B * self.erT + b3
+        # Initial cost (no bond!)
+        cost = np.sum(b_vector * self.binary_prices)
         
-        portfolio_values = np.array([V_scenario1, V_scenario2, V_scenario3])
+        # Portfolio values at maturity (no bond term!)
+        # In scenario i, only binary_i pays 1, all others pay 0
+        portfolio_values = b_vector.copy()
         
         # Replication errors (should be zero for perfect replication)
         errors = portfolio_values - self.C_T
@@ -149,35 +142,27 @@ class TrinomialBinaryOptionEnvironment:
         # Max absolute error (also penalize worst-case)
         max_error = np.max(np.abs(errors))
         
-        # Style penalty: prefer solutions close to analytical balanced solution
-        # This breaks the symmetry and guides toward consistent results
-        style_penalty = (
-            (B - self.B_target)**2 + 
-            (b1 - self.b1_target)**2 + 
-            (b2 - self.b2_target)**2 + 
-            (b3 - self.b3_target)**2
-        ) * 0.1  # Increased weight for tighter convergence
-        
         # Reward function for EXACT replication:
-        # Heavily penalize any replication error (primary objective)
-        # Moderately penalize style deviation (secondary objective for consistency)
+        # Heavily penalize any replication error
         replication_penalty = mse * 10000 + max_error * 5000
+        
+        # Small penalty for cost deviation from theoretical
         cost_deviation = abs(cost - self.C0) * 0.1
         
-        reward = -(replication_penalty + cost_deviation + style_penalty)
+        reward = -(replication_penalty + cost_deviation)
         
         return reward, cost, errors, portfolio_values
 
 
 class ThompsonSamplingBandit:
     """
-    Thompson Sampling for continuous actions in trinomial case
-    Learning to find exact replication with bonds and binary options
+    Thompson Sampling for continuous actions in N-nomial case
+    Learning to find exact replication with binary options only (no bond)
     
     NO BIAS: Uniform exploration, no hardcoded preferences
     Uses adaptive exploration noise that decreases over time
     """
-    def __init__(self, n_binaries=3):
+    def __init__(self, n_binaries):
         # Store all observed (action, reward) pairs
         self.observations = []
         self.n_updates = 0
@@ -187,26 +172,23 @@ class ThompsonSamplingBandit:
         """
         Sample from posterior (or uniform if no data) - NO BIAS
         exploration_factor: scales noise (1.0 = full noise, 0.0 = no noise)
+        
+        Returns:
+            b_vector: numpy array of shape (n_binaries,)
         """
-        if len(self.observations) < 100:  # Initial exploration (more for 4D)
+        if len(self.observations) < 100:  # Initial exploration
             # Pure uniform exploration at start - NO BIAS
-            B = np.random.uniform(-50, 50)
-            b1 = np.random.uniform(-10, 30)
-            b2 = np.random.uniform(-10, 30)
-            b3 = np.random.uniform(-10, 30)
+            b_vector = np.random.uniform(-10, 30, size=self.n_binaries)
         else:
             # After collecting data, sample from empirical distribution
             # Weight by softmax of rewards
-            Bs = [obs[0] for obs in self.observations]
-            b1s = [obs[1] for obs in self.observations]
-            b2s = [obs[2] for obs in self.observations]
-            b3s = [obs[3] for obs in self.observations]
-            rewards = np.array([obs[4] for obs in self.observations])
+            b_vectors = np.array([obs[0] for obs in self.observations])
+            rewards = np.array([obs[1] for obs in self.observations])
             
             # Softmax weights (higher reward = higher probability)
             # Use lower temperature for more exploitation
             rewards_shifted = rewards - rewards.max()
-            exp_rewards = np.exp(rewards_shifted / 0.05)  # Lower temperature = 0.05
+            exp_rewards = np.exp(rewards_shifted / 0.05)
             
             # Handle potential numerical issues
             if np.any(np.isnan(exp_rewards)) or np.any(np.isinf(exp_rewards)):
@@ -218,47 +200,41 @@ class ThompsonSamplingBandit:
             idx = np.random.choice(len(self.observations), p=weights)
             
             # Adaptive noise that decreases over time
-            noise_B = exploration_factor * 0.5
             noise_b = exploration_factor * 0.2
             
-            B = Bs[idx] + np.random.normal(0, noise_B)
-            b1 = b1s[idx] + np.random.normal(0, noise_b)
-            b2 = b2s[idx] + np.random.normal(0, noise_b)
-            b3 = b3s[idx] + np.random.normal(0, noise_b)
+            b_vector = b_vectors[idx] + np.random.normal(0, noise_b, size=self.n_binaries)
             
             # Clip to reasonable range
-            B = np.clip(B, -50, 50)
-            b1 = np.clip(b1, -10, 30)
-            b2 = np.clip(b2, -10, 30)
-            b3 = np.clip(b3, -10, 30)
+            b_vector = np.clip(b_vector, -10, 30)
         
-        return B, b1, b2, b3
+        return b_vector
     
-    def update(self, context, B, b1, b2, b3, reward):
+    def update(self, context, b_vector, reward):
         """Store observation (non-parametric) - NO BIAS"""
-        self.observations.append((B, b1, b2, b3, reward))
+        self.observations.append((b_vector.copy(), reward))
         self.n_updates += 1
         
         # Keep only best observations to focus on good regions
         if len(self.observations) > 2000:
             # Keep top 80% by reward
-            self.observations.sort(key=lambda x: x[4], reverse=True)
+            self.observations.sort(key=lambda x: x[1], reverse=True)
             self.observations = self.observations[:1600]
 
 
 def train_thompson_sampling(env, n_rounds=20000, print_every=2000):
     """Train Thompson Sampling for exact replication with adaptive exploration"""
     print("\n" + "="*60)
-    print("THOMPSON SAMPLING FOR TRINOMIAL REPLICATION")
+    print(f"THOMPSON SAMPLING FOR {env.N}-NOMIAL REPLICATION")
     print("="*60)
-    print("Objective: Find exact replication using bonds and binaries")
-    print("Instruments: Bond (B), Binary_1 (b1), Binary_2 (b2), Binary_3 (b3)")
+    print("Objective: Find exact replication using ONLY binaries (no bond)")
+    print(f"Instruments: Binary_1, Binary_2, ..., Binary_{env.N}")
     print("Goal: Portfolio value = Option payoff in ALL scenarios")
+    print("Unique solution: b_i = C_i for all i")
     print("Adaptive exploration: Noise decreases over time for convergence")
     print("="*60)
     print()
     
-    bandit = ThompsonSamplingBandit(n_binaries=3)
+    bandit = ThompsonSamplingBandit(n_binaries=env.N)
     context = env.get_context()
     
     rewards_history = []
@@ -272,19 +248,19 @@ def train_thompson_sampling(env, n_rounds=20000, print_every=2000):
         exploration_factor = max(0.1, 1.0 - (round_num / n_rounds))
         
         # Select action with adaptive noise
-        B, b1, b2, b3 = bandit.select_action(context, exploration_factor)
+        b_vector = bandit.select_action(context, exploration_factor)
         
         # Evaluate
-        reward, cost, errors, portfolio_values = env.evaluate_replication(B, b1, b2, b3)
+        reward, cost, errors, portfolio_values = env.evaluate_replication(b_vector)
         
         # Track best solution (lowest replication error)
         total_error = np.sum(np.abs(errors))
         if total_error < best_error:
             best_error = total_error
-            best_solution = (B, b1, b2, b3, cost, errors, portfolio_values)
+            best_solution = (b_vector.copy(), cost, errors.copy(), portfolio_values.copy())
         
         # Update bandit
-        bandit.update(context, B, b1, b2, b3, reward)
+        bandit.update(context, b_vector, reward)
         
         rewards_history.append(reward)
         costs_history.append(cost)
@@ -302,9 +278,9 @@ def train_thompson_sampling(env, n_rounds=20000, print_every=2000):
             print(f"  Avg Cost: {recent_cost:.4f}")
             print(f"  Avg Total Error: {recent_error:.6f}")
             if best_solution:
-                B_best, b1_best, b2_best, b3_best, cost_best, errs_best, vals_best = best_solution
+                b_best, cost_best, errs_best, vals_best = best_solution
                 print(f"  Best solution so far:")
-                print(f"    B={B_best:.4f}, b1={b1_best:.4f}, b2={b2_best:.4f}, b3={b3_best:.4f}")
+                print(f"    b = {b_best}")
                 print(f"    Cost={cost_best:.4f}, Total error: {best_error:.10f}")
     
     return bandit, best_solution
@@ -324,44 +300,40 @@ def evaluate_final_solution(bandit, env, n_samples=5000):
     
     # Use very low exploration for final evaluation
     for _ in range(n_samples):
-        B, b1, b2, b3 = bandit.select_action(context, exploration_factor=0.05)
-        reward, cost, errors, portfolio_values = env.evaluate_replication(B, b1, b2, b3)
+        b_vector = bandit.select_action(context, exploration_factor=0.05)
+        reward, cost, errors, portfolio_values = env.evaluate_replication(b_vector)
         
         total_error = np.sum(np.abs(errors))
-        all_solutions.append((B, b1, b2, b3, cost, errors, portfolio_values, total_error))
+        all_solutions.append((b_vector.copy(), cost, errors.copy(), portfolio_values.copy(), total_error))
         
         if total_error < best_error:
             best_error = total_error
-            best_solution = (B, b1, b2, b3, cost, errors, portfolio_values)
+            best_solution = (b_vector.copy(), cost, errors.copy(), portfolio_values.copy())
     
     if best_solution:
-        B, b1, b2, b3, cost, errors, portfolio_values = best_solution
+        b_vector, cost, errors, portfolio_values = best_solution
         
         print(f"\n*** BEST REPLICATION STRATEGY ***")
-        print(f"  B = {B:.8f}")
-        print(f"  b1 = {b1:.8f}")
-        print(f"  b2 = {b2:.8f}")
-        print(f"  b3 = {b3:.8f}")
+        for i in range(env.N):
+            print(f"  b{i+1} = {b_vector[i]:.8f}")
         print(f"  Initial cost: {cost:.8f}")
         
         print(f"\n  Cost breakdown:")
-        print(f"    Bond: {B:.8f}")
-        print(f"    Binary_1: {b1 * env.binary_prices[0]:.8f} ({b1:.4f} units @ {env.binary_prices[0]:.4f})")
-        print(f"    Binary_2: {b2 * env.binary_prices[1]:.8f} ({b2:.4f} units @ {env.binary_prices[1]:.4f})")
-        print(f"    Binary_3: {b3 * env.binary_prices[2]:.8f} ({b3:.4f} units @ {env.binary_prices[2]:.4f})")
+        for i in range(env.N):
+            print(f"    Binary_{i+1}: {b_vector[i] * env.binary_prices[i]:.8f} ({b_vector[i]:.4f} units @ {env.binary_prices[i]:.4f})")
         
         print(f"\n  Replication verification:")
-        for i, scenario in enumerate(['Scenario 1', 'Scenario 2', 'Scenario 3']):
+        for i in range(env.N):
             status = "✓" if abs(errors[i]) < 1e-4 else "❌"
-            print(f"    {scenario}: Portfolio={portfolio_values[i]:.8f}, Payoff={env.C_T[i]:.8f}, Error={errors[i]:.10f} {status}")
+            print(f"    Scenario {i+1}: Portfolio={portfolio_values[i]:.8f}, Payoff={env.C_T[i]:.8f}, Error={errors[i]:.10f} {status}")
         
         print(f"\n  Total absolute error: {np.sum(np.abs(errors)):.10f}")
         print(f"  Cost vs theoretical: {cost:.8f} vs {env.C0:.8f}")
         print(f"  Cost error: {abs(cost - env.C0):.10f}")
         
-        # Show distribution of costs (only show best 50%)
-        costs = [sol[4] for sol in all_solutions]
-        errors_all = [sol[7] for sol in all_solutions]
+        # Show distribution of costs (only show best solutions)
+        costs = [sol[1] for sol in all_solutions]
+        errors_all = [sol[4] for sol in all_solutions]
         
         # Filter to only good solutions (error < 1.0)
         good_solutions = [(c, e) for c, e in zip(costs, errors_all) if e < 1.0]
@@ -383,102 +355,94 @@ def evaluate_final_solution(bandit, env, n_samples=5000):
 def find_analytical_solution(env):
     """Calculate the analytical solution for comparison"""
     print("\n" + "="*60)
-    print("ANALYTICAL SOLUTION (for comparison)")
+    print("ANALYTICAL SOLUTION")
     print("="*60)
     
-    # Pure binary solution: B = 0
-    B_pure = 0
-    b1_pure = env.C_T[0]
-    b2_pure = env.C_T[1]
-    b3_pure = env.C_T[2]
-    cost_pure = (B_pure + b1_pure * env.binary_prices[0] + 
-                 b2_pure * env.binary_prices[1] + b3_pure * env.binary_prices[2])
+    # In exactly complete market (no bond), unique solution
+    b_analytical = env.C_T.copy()
+    cost_analytical = np.sum(b_analytical * env.binary_prices)
     
-    print("\nPure Binary Strategy:")
-    print(f"  B = {B_pure:.8f}")
-    print(f"  b1 = {b1_pure:.8f}")
-    print(f"  b2 = {b2_pure:.8f}")
-    print(f"  b3 = {b3_pure:.8f}")
-    print(f"  Cost = {cost_pure:.8f}")
-    
-    # Balanced solution: minimize binary positions
-    avg_payoff = np.mean(env.C_T)
-    B_balanced = avg_payoff / env.erT
-    b1_balanced = env.C_T[0] - B_balanced * env.erT
-    b2_balanced = env.C_T[1] - B_balanced * env.erT
-    b3_balanced = env.C_T[2] - B_balanced * env.erT
-    cost_balanced = (B_balanced + b1_balanced * env.binary_prices[0] + 
-                     b2_balanced * env.binary_prices[1] + b3_balanced * env.binary_prices[2])
-    
-    print("\nBalanced Strategy:")
-    print(f"  B = {B_balanced:.8f}")
-    print(f"  b1 = {b1_balanced:.8f}")
-    print(f"  b2 = {b2_balanced:.8f}")
-    print(f"  b3 = {b3_balanced:.8f}")
-    print(f"  Cost = {cost_balanced:.8f}")
+    print("\nUnique Solution (no bond):")
+    for i in range(env.N):
+        print(f"  b{i+1} = {b_analytical[i]:.8f}")
+    print(f"  Cost = {cost_analytical:.8f}")
     
     print(f"\nTheoretical option price: {env.C0:.8f}")
-    print("All costs should equal theoretical price (no arbitrage)!")
+    print("Cost should equal theoretical price (no arbitrage)!")
     
-    return {
-        'pure': (B_pure, b1_pure, b2_pure, b3_pure, cost_pure),
-        'balanced': (B_balanced, b1_balanced, b2_balanced, b3_balanced, cost_balanced)
-    }
+    return b_analytical, cost_analytical
 
 
-def main_trinomial():
+def main_nnomial():
     """
-    Use Thompson Sampling to learn exact replication in the complete trinomial market
+    Use Thompson Sampling to learn exact replication in the complete N-nomial market
+    NO BOND - only binaries for unique solution
+    
+    User can specify any N and factors
     """
     
     print("="*60)
-    print("TRINOMIAL OPTION REPLICATION WITH THOMPSON SAMPLING")
+    print("N-NOMIAL OPTION REPLICATION WITH THOMPSON SAMPLING")
     print("="*60)
     print("Objective: Learn exact replication using RL (Thompson Sampling)")
-    print("Instruments: Bond + Binary_1 + Binary_2 + Binary_3")
-    print("Market: COMPLETE (3 scenarios, 4 instruments)")
+    print("Instruments: Binary_1 + Binary_2 + ... + Binary_N (NO BOND)")
+    print("Market: EXACTLY COMPLETE (N scenarios, N instruments)")
+    print("UNIQUE SOLUTION: b_i = C_i for all i")
     print("NO BIAS: Uniform prior, no hardcoded preferences")
     print("="*60)
     print()
     
+    # Example: 5-nomial model
+    # User can change these parameters
+    N = 5
+    factors = [1.3, 1.1, 1.0, 0.9, 0.7]  # 5 scenarios
+    
+    print(f"Running {N}-nomial example...")
+    print()
+    
     # Create environment
-    env = TrinomialBinaryOptionEnvironment(
+    env = NnomialBinaryOptionEnvironment(
         S0=100, 
         K=100, 
         r=0.05, 
         T=1.0,
-        factors=[1.2, 1.0, 0.8]  # Scenario 1: up 20%, Scenario 2: flat, Scenario 3: down 20%
+        factors=factors
     )
     
-    # Show analytical solutions first
-    analytical = find_analytical_solution(env)
+    # Show analytical solution first
+    b_ana, cost_ana = find_analytical_solution(env)
     
-    # Train Thompson Sampling with more rounds
+    # Train Thompson Sampling
     bandit, best_training = train_thompson_sampling(
         env, n_rounds=20000, print_every=2000
     )
     
-    # Final evaluation with more samples
+    # Final evaluation
     best_solution = evaluate_final_solution(bandit, env, n_samples=5000)
     
     # Compare with analytical
     if best_solution:
-        B_ts, b1_ts, b2_ts, b3_ts, cost_ts, _, _ = best_solution
-        B_ana, b1_ana, b2_ana, b3_ana, cost_ana = analytical['balanced']
+        b_ts, cost_ts, _, _ = best_solution
         
         print("\n" + "="*60)
         print("THOMPSON SAMPLING vs ANALYTICAL")
         print("="*60)
-        print(f"Thompson Sampling: B={B_ts:.6f}, b1={b1_ts:.6f}, b2={b2_ts:.6f}, b3={b3_ts:.6f}, Cost={cost_ts:.6f}")
-        print(f"Analytical:        B={B_ana:.6f}, b1={b1_ana:.6f}, b2={b2_ana:.6f}, b3={b3_ana:.6f}, Cost={cost_ana:.6f}")
-        print(f"\nErrors:")
-        print(f"  B error: {abs(B_ts - B_ana):.8f}")
-        print(f"  b1 error: {abs(b1_ts - b1_ana):.8f}")
-        print(f"  b2 error: {abs(b2_ts - b2_ana):.8f}")
-        print(f"  b3 error: {abs(b3_ts - b3_ana):.8f}")
+        print("Thompson Sampling:")
+        for i in range(N):
+            print(f"  b{i+1} = {b_ts[i]:.6f}")
+        print(f"  Cost = {cost_ts:.6f}")
+        
+        print("\nAnalytical:")
+        for i in range(N):
+            print(f"  b{i+1} = {b_ana[i]:.6f}")
+        print(f"  Cost = {cost_ana:.6f}")
+        
+        print("\nErrors:")
+        for i in range(N):
+            print(f"  b{i+1} error: {abs(b_ts[i] - b_ana[i]):.8f}")
         print(f"  Cost error: {abs(cost_ts - cost_ana):.8f}")
         print("="*60)
 
 
 if __name__ == "__main__":
-    main_trinomial()
+    main_nnomial()
