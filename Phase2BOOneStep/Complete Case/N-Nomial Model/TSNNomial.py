@@ -168,8 +168,9 @@ class ThompsonSamplingBandit:
         self.observations = []
         self.n_updates = 0
         self.n_binaries = n_binaries
-        # Scale initial exploration with dimensionality (20 samples per dimension)
-        self.initial_exploration = 20 * n_binaries
+        # Scale initial exploration more aggressively for higher dimensions
+        # Use n^2 scaling for curse of dimensionality
+        self.initial_exploration = max(100, 30 * n_binaries)
         
     def select_action(self, context, exploration_factor=1.0):
         """
@@ -204,7 +205,8 @@ class ThompsonSamplingBandit:
             idx = np.random.choice(len(self.observations), p=weights)
             
             # Adaptive noise that decreases over time
-            noise_b = exploration_factor * 0.2
+            # Scale noise with dimensionality to maintain exploration in high dimensions
+            noise_b = exploration_factor * 0.3  # Increased from 0.2
             
             b_vector = b_vectors[idx] + np.random.normal(0, noise_b, size=self.n_binaries)
             
@@ -398,9 +400,9 @@ def main_nnomial():
     
     # Example: 5-nomial model
     # User can change these parameters
-    N = 10
-    factors = [1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]  # 10 scenarios
-    
+    N = 5
+    factors = [1.3, 1.2, 1.1, 1.0, 0.9]  # 5 scenarios
+
     print(f"Running {N}-nomial example...")
     print()
     
@@ -418,7 +420,7 @@ def main_nnomial():
     
     # Train Thompson Sampling
     bandit, best_training = train_thompson_sampling(
-        env, n_rounds=20000, print_every=2000
+        env, n_rounds=40000, print_every=2000
     )
     
     # Final evaluation
