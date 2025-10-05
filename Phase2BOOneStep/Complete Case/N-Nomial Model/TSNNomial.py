@@ -183,7 +183,7 @@ class ThompsonSamplingBandit:
         if len(self.observations) < self.initial_exploration:
             # Pure uniform exploration at start - NO BIAS
             # More exploration for higher dimensions
-            b_vector = np.random.uniform(-10, 30, size=self.n_binaries)
+            b_vector = np.random.uniform(-10, 60, size=self.n_binaries)
         else:
             # After collecting data, sample from empirical distribution
             # Weight by softmax of rewards
@@ -211,7 +211,7 @@ class ThompsonSamplingBandit:
             b_vector = b_vectors[idx] + np.random.normal(0, noise_b, size=self.n_binaries)
             
             # Clip to reasonable range
-            b_vector = np.clip(b_vector, -10, 30)
+            b_vector = np.clip(b_vector, -10, 60)
         
         return b_vector
     
@@ -400,8 +400,8 @@ def main_nnomial():
     
     # Example: 5-nomial model
     # User can change these parameters
-    N = 5
-    factors = [1.3, 1.2, 1.1, 1.0, 0.9]  # 5 scenarios
+    N = 10
+    factors = [1.5, 1.4, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]  # 10 scenarios
 
     print(f"Running {N}-nomial example...")
     print()
