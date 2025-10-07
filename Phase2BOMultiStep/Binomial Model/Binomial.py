@@ -148,7 +148,7 @@ class BinomialEnvironment:
 
 class PPOAgent:
     """PPO for learning optimal binary positions"""
-    def __init__(self, state_dim, action_dim, lr=3e-4):
+    def __init__(self, state_dim, action_dim, lr=1e-4):  # Lower LR for finer adjustments
         self.actor = nn.Sequential(
             nn.Linear(state_dim, 256),
             nn.Tanh(),
@@ -315,5 +315,6 @@ if __name__ == "__main__":
     print("Binaries pay immediately upon reaching the node")
     print("="*60)
     
-    agent, env, best_pos = train_hedging(T_steps=2, n_episodes=10000, option_type='call')
+    # Increased training: 50k episodes with lower learning rate for finer adjustments
+    agent, env, best_pos = train_hedging(T_steps=2, n_episodes=50000, option_type='call')
     
