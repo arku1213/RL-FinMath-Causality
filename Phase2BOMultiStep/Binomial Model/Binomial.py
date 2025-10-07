@@ -2,411 +2,318 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from collections import deque
-import random
+from torch.distributions import Normal
 
-# Binomial model parameters
-S0 = 100
-K = 100
-r = 0.05
-T = 1.0
-u = 1.2
-d = 0.8
-dt = T / 2
+class BinomialEnvironment:
+    """
+    Binomial tree with node-paying binaries (immediate payouts).
+    No root binary. Binaries at t=1,2,...,T pay immediately upon reaching that node.
+    """
+    def __init__(self, S0=100, K=100, r=0.05, sigma=0.2, T_steps=2, dt=1.0, option_type='call'):
+        self.S0 = S0
+        self.K = K
+        self.r = r
+        self.sigma = sigma
+        self.T_steps = T_steps
+        self.dt = dt
+        self.option_type = option_type
+        
+        # CRR model
+        self.u = np.exp(sigma * np.sqrt(dt))
+        self.d = 1 / self.u
+        self.p = (np.exp(r * dt) - self.d) / (self.u - self.d)
+        
+        # Build tree
+        self.build_tree()
+        self.calculate_terminal_payoffs()
+        self.calculate_binary_prices()
+        
+    def build_tree(self):
+        """Build recombining binomial tree - no root binary"""
+        self.nodes = {}  # (t, n_ups) -> stock_price
+        self.binary_nodes = []  # All nodes with binaries (excluding root)
+        
+        for t in range(self.T_steps + 1):
+            for n_ups in range(t + 1):
+                price = self.S0 * (self.u ** n_ups) * (self.d ** (t - n_ups))
+                self.nodes[(t, n_ups)] = price
+                
+                # Binaries at all nodes except root (t=0)
+                if t > 0:
+                    self.binary_nodes.append((t, n_ups))
+        
+        self.n_binaries = len(self.binary_nodes)
+        
+        print(f"\n{'='*60}")
+        print(f"Binomial Tree Structure (T={self.T_steps})")
+        print(f"{'='*60}")
+        print(f"Total binaries: {self.n_binaries}")
+        
+        for t in range(1, self.T_steps + 1):
+            count = sum(1 for node_t, _ in self.binary_nodes if node_t == t)
+            print(f"  Time t={t}: {count} binaries")
+        
+    def calculate_terminal_payoffs(self):
+        """Calculate option payoff at terminal nodes"""
+        self.terminal_payoffs = []
+        
+        for n_ups in range(self.T_steps + 1):
+            S_T = self.nodes[(self.T_steps, n_ups)]
+            if self.option_type == 'call':
+                payoff = max(S_T - self.K, 0)
+            else:
+                payoff = max(self.K - S_T, 0)
+            self.terminal_payoffs.append(payoff)
+        
+        print(f"\nTerminal Payoffs ({self.option_type}):")
+        for n_ups, payoff in enumerate(self.terminal_payoffs):
+            S_T = self.nodes[(self.T_steps, n_ups)]
+            print(f"  n_ups={n_ups} (S={S_T:.2f}): ${payoff:.2f}")
+    
+    def calculate_binary_prices(self):
+        """Calculate risk-neutral price for each binary"""
+        self.binary_prices = []
+        
+        for t, n_ups in self.binary_nodes:
+            # Probability of reaching (t, n_ups)
+            from math import comb
+            n_downs = t - n_ups
+            prob = comb(t, n_ups) * (self.p ** n_ups) * ((1 - self.p) ** n_downs)
+            
+            # Discounted price (paid at t=0, pays at time t)
+            price = np.exp(-self.r * t * self.dt) * prob
+            self.binary_prices.append(price)
+        
+        print(f"\nBinary Prices (Risk-Neutral):")
+        for i, (t, n_ups) in enumerate(self.binary_nodes):
+            S = self.nodes[(t, n_ups)]
+            print(f"  Binary_{i+1} b({t},{n_ups}) @ S={S:.2f}: ${self.binary_prices[i]:.6f}")
+    
+    def evaluate_strategy(self, binary_positions):
+        """
+        Evaluate strategy on all possible paths.
+        Each path accumulates binary payoffs as it passes through nodes.
+        """
+        # Total initial cost
+        cost = sum(binary_positions[i] * self.binary_prices[i] for i in range(self.n_binaries))
+        
+        # Generate all possible paths
+        paths = []
+        for terminal_n_ups in range(self.T_steps + 1):
+            path = [(0, 0)]  # Start at root
+            
+            # Build path to terminal
+            current_n_ups = 0
+            for t in range(1, self.T_steps + 1):
+                # Determine if this step was up or down
+                if current_n_ups < terminal_n_ups:
+                    # Need more ups
+                    current_n_ups += 1
+                # else: down (current_n_ups stays same)
+                
+                path.append((t, current_n_ups))
+            
+            paths.append(path)
+        
+        # Evaluate each path
+        errors = []
+        portfolio_values = []
+        
+        for path_idx, path in enumerate(paths):
+            # Sum binary payoffs along this path
+            portfolio_value = 0
+            
+            for t, n_ups in path:
+                if t > 0:  # Skip root
+                    # Find this node in binary_nodes
+                    try:
+                        node_idx = self.binary_nodes.index((t, n_ups))
+                        portfolio_value += binary_positions[node_idx]
+                    except ValueError:
+                        pass  # Node not in binary list
+            
+            target_payoff = self.terminal_payoffs[path_idx]
+            error = portfolio_value - target_payoff
+            
+            portfolio_values.append(portfolio_value)
+            errors.append(error)
+        
+        errors = np.array(errors)
+        total_abs_error = np.sum(np.abs(errors))
+        max_error = np.max(np.abs(errors))
+        mse_error = np.mean(errors ** 2)
+        
+        return cost, total_abs_error, max_error, mse_error, errors, portfolio_values
 
-# Risk-neutral probability
-p = (np.exp(r * dt) - d) / (u - d)
 
-# Stock prices and payoffs
-prices = {
-    'T2_UU': S0 * u * u,
-    'T2_UD': S0 * u * d,
-    'T2_DU': S0 * d * u,
-    'T2_DD': S0 * d * d
-}
-
-payoffs = {
-    'UU': max(prices['T2_UU'] - K, 0),
-    'UD': max(prices['T2_UD'] - K, 0),
-    'DU': max(prices['T2_DU'] - K, 0),
-    'DD': max(prices['T2_DD'] - K, 0)
-}
-
-# Theoretical price
-path_probs = {
-    'UU': p * p,
-    'UD': p * (1-p),
-    'DU': (1-p) * p,
-    'DD': (1-p) * (1-p)
-}
-theoretical_price = np.exp(-r * T) * sum(path_probs[path] * payoffs[path] for path in ['UU', 'UD', 'DU', 'DD'])
-
-# Binary prices
-binary_prices = {
-    'b1': p * np.exp(-r * dt),
-    'b2': (1-p) * np.exp(-r * dt),
-    'b3': p * np.exp(-r * dt),
-    'b4': (1-p) * np.exp(-r * dt),
-    'b5': p * np.exp(-r * dt),
-    'b6': (1-p) * np.exp(-r * dt),
-}
-
-print("="*60)
-print("PURE DDPG FOR T=2 BINOMIAL DYNAMIC HEDGING")
-print("="*60)
-print(f"S0={S0}, K={K}, r={r}, T={T}, u={u}, d={d}")
-print(f"Risk-neutral p={p:.4f}")
-print(f"\nPayoffs: UU=${payoffs['UU']:.2f}, UD=${payoffs['UD']:.2f}, DU=${payoffs['DU']:.2f}, DD=${payoffs['DD']:.2f}")
-print(f"Theoretical Price: ${theoretical_price:.2f}")
-print("="*60 + "\n")
-
-# Actor Network
-class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
-        super(Actor, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-            nn.Tanh()  # Output in [-1, 1]
+class PPOAgent:
+    """PPO for learning optimal binary positions"""
+    def __init__(self, state_dim, action_dim, lr=3e-4):
+        self.actor = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.Tanh(),
+            nn.Linear(256, 256),
+            nn.Tanh(),
+            nn.Linear(256, action_dim)
         )
         
-        # Initialize with small weights
-        for layer in self.net:
-            if isinstance(layer, nn.Linear):
-                nn.init.orthogonal_(layer.weight, gain=0.01)
-                nn.init.constant_(layer.bias, 0)
-    
-    def forward(self, state):
-        # Map tanh output [-1,1] to [0, 50]
-        return self.net(state) * 25 + 25
-
-# Critic Network
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
-        super(Critic, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim + action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
+        self.critic = nn.Sequential(
+            nn.Linear(state_dim, 256),
+            nn.Tanh(),
+            nn.Linear(256, 256),
+            nn.Tanh(),
+            nn.Linear(256, 1)
         )
         
-        for layer in self.net:
-            if isinstance(layer, nn.Linear):
-                nn.init.orthogonal_(layer.weight, gain=1.0)
-                nn.init.constant_(layer.bias, 0)
-    
-    def forward(self, state, action):
-        return self.net(torch.cat([state, action], dim=1))
-
-# Replay Buffer
-class ReplayBuffer:
-    def __init__(self, capacity=100000):
-        self.buffer = deque(maxlen=capacity)
-    
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
-    
-    def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = zip(*batch)
-        return (np.array(state), np.array(action), np.array(reward), 
-                np.array(next_state), np.array(done))
-    
-    def __len__(self):
-        return len(self.buffer)
-
-# Environment
-class BinomialEnv:
-    def __init__(self):
-        self.reset()
-    
-    def reset(self):
-        self.t = 0
-        self.path = []
-        self.binaries = {}
-        self.state_price = S0
-        return self._get_state()
-    
-    def _get_state(self):
-        if self.t == 0:
-            return np.array([0.0, S0/100, 0.0, 2.0], dtype=np.float32)
-        elif self.t == 1:
-            path_ind = 1.0 if self.path[-1] == 'U' else -1.0
-            return np.array([1.0, self.state_price/100, path_ind, 1.0], dtype=np.float32)
-        else:
-            return np.array([2.0, self.state_price/100, 0.0, 0.0], dtype=np.float32)
-    
-    def step(self, action):
-        if isinstance(action, torch.Tensor):
-            action = action.detach().cpu().numpy()
-        action = np.array(action).flatten()
+        self.optimizer = optim.Adam(
+            list(self.actor.parameters()) + list(self.critic.parameters()), 
+            lr=lr
+        )
         
-        if self.t == 0:
-            self.binaries['b1'] = float(action[0])
-            self.binaries['b2'] = float(action[1])
-            
-            next_move = 'U' if np.random.rand() < p else 'D'
-            self.path.append(next_move)
-            self.state_price = S0 * u if next_move == 'U' else S0 * d
-            self.t = 1
-            
-            return self._get_state(), 0.0, False
+    def select_action(self, state):
+        state_t = torch.FloatTensor(state).unsqueeze(0)
         
-        elif self.t == 1:
-            if self.path[-1] == 'U':
-                self.binaries['b3'] = float(action[0])
-                self.binaries['b4'] = float(action[1])
-            else:
-                self.binaries['b5'] = float(action[0])
-                self.binaries['b6'] = float(action[1])
-            
-            next_move = 'U' if np.random.rand() < p else 'D'
-            self.path.append(next_move)
-            self.t = 2
-            
-            reward = self._calculate_reward()
-            return self._get_state(), reward, True
-    
-    def _calculate_reward(self):
-        # Calculate cost
-        cost = sum(self.binaries.get(f'b{i}', 0) * binary_prices[f'b{i}'] for i in range(1, 7))
-        
-        # Calculate violations
-        violations = []
-        max_violation = 0
-        for scenario in ['UU', 'UD', 'DU', 'DD']:
-            pv = self._get_portfolio_value(scenario)
-            target = payoffs[scenario]
-            if pv < target - 0.01:
-                shortfall = target - pv
-                violations.append(shortfall)
-                max_violation = max(max_violation, shortfall)
-        
-        # Reward structure
-        # 1. Minimize cost
-        cost_penalty = abs(cost - theoretical_price)
-        
-        # 2. Heavy penalty for violations
-        violation_penalty = sum(violations) * 1000 if violations else 0
-        
-        # 3. Bonus for success
-        bonus = 0
-        if not violations:
-            if 0.95 * theoretical_price <= cost <= 1.05 * theoretical_price:
-                bonus = 100
-            else:
-                bonus = 10  # Small bonus for feasibility even if costly
-        
-        reward = -cost_penalty - violation_penalty + bonus
-        
-        return reward
-    
-    def _get_portfolio_value(self, scenario):
-        value = 0
-        if scenario[0] == 'U':
-            value += self.binaries.get('b1', 0)
-        else:
-            value += self.binaries.get('b2', 0)
-        
-        if scenario == 'UU':
-            value += self.binaries.get('b3', 0)
-        elif scenario == 'UD':
-            value += self.binaries.get('b4', 0)
-        elif scenario == 'DU':
-            value += self.binaries.get('b5', 0)
-        elif scenario == 'DD':
-            value += self.binaries.get('b6', 0)
-        
-        return value
-    
-    def get_metrics(self):
-        cost = sum(self.binaries.get(f'b{i}', 0) * binary_prices[f'b{i}'] for i in range(1, 7))
-        violations = []
-        for scenario in ['UU', 'UD', 'DU', 'DD']:
-            pv = self._get_portfolio_value(scenario)
-            target = payoffs[scenario]
-            if pv < target - 0.01:
-                violations.append(scenario)
-        
-        return {'cost': cost, 'violations': violations, 'binaries': dict(self.binaries)}
-
-# DDPG Agent
-class DDPG:
-    def __init__(self, state_dim, action_dim, lr_actor=1e-4, lr_critic=1e-3, gamma=0.99, tau=0.001):
-        self.actor = Actor(state_dim, action_dim)
-        self.actor_target = Actor(state_dim, action_dim)
-        self.actor_target.load_state_dict(self.actor.state_dict())
-        
-        self.critic = Critic(state_dim, action_dim)
-        self.critic_target = Critic(state_dim, action_dim)
-        self.critic_target.load_state_dict(self.critic.state_dict())
-        
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr_actor)
-        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
-        
-        self.gamma = gamma
-        self.tau = tau
-        self.replay_buffer = ReplayBuffer()
-    
-    def select_action(self, state, noise=0.1):
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        action = self.actor(state_tensor).detach().numpy()[0]
-        
-        if noise > 0:
-            action += np.random.normal(0, noise * 25, size=action.shape)  # Noise scaled to action range
-            action = np.clip(action, 0, 50)
-        
-        return action
-    
-    def update(self, batch_size=128):
-        if len(self.replay_buffer) < batch_size:
-            return None, None
-        
-        state, action, reward, next_state, done = self.replay_buffer.sample(batch_size)
-        
-        state = torch.FloatTensor(state)
-        action = torch.FloatTensor(action)
-        reward = torch.FloatTensor(reward).unsqueeze(1)
-        next_state = torch.FloatTensor(next_state)
-        done = torch.FloatTensor(done).unsqueeze(1)
-        
-        # Update Critic
         with torch.no_grad():
-            next_action = self.actor_target(next_state)
-            target_q = self.critic_target(next_state, next_action)
-            target_q = reward + (1 - done) * self.gamma * target_q
+            action_mean = self.actor(state_t)
+            action_std = torch.ones_like(action_mean) * 1.0
+            dist = Normal(action_mean, action_std)
+            action = dist.sample()
+            log_prob = dist.log_prob(action).sum(-1)
         
-        current_q = self.critic(state, action)
-        critic_loss = F.mse_loss(current_q, target_q)
+        return action.squeeze(0).numpy(), log_prob.item()
+    
+    def update(self, memory):
+        states = torch.FloatTensor(np.array(memory['states']))
+        actions = torch.FloatTensor(np.array(memory['actions']))
+        log_probs_old = torch.FloatTensor(memory['log_probs'])
+        returns = torch.FloatTensor(memory['returns'])
         
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
-        self.critic_optimizer.step()
+        returns = (returns - returns.mean()) / (returns.std() + 1e-8)
         
-        # Update Actor
-        actor_loss = -self.critic(state, self.actor(state)).mean()
-        
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
-        self.actor_optimizer.step()
-        
-        # Soft update target networks
-        for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-        
-        for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
-            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-        
-        return critic_loss.item(), actor_loss.item()
+        for _ in range(10):
+            action_mean = self.actor(states)
+            values = self.critic(states).squeeze()
+            
+            action_std = torch.ones_like(action_mean) * 1.0
+            dist = Normal(action_mean, action_std)
+            
+            log_probs = dist.log_prob(actions).sum(-1)
+            entropy = dist.entropy().sum(-1).mean()
+            
+            ratios = torch.exp(log_probs - log_probs_old)
+            advantages = returns - values.detach()
+            
+            surr1 = ratios * advantages
+            surr2 = torch.clamp(ratios, 0.8, 1.2) * advantages
+            
+            actor_loss = -torch.min(surr1, surr2).mean()
+            critic_loss = ((returns - values) ** 2).mean()
+            
+            loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy
+            
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                list(self.actor.parameters()) + list(self.critic.parameters()), 
+                max_norm=0.5
+            )
+            self.optimizer.step()
 
-# Training
-def train_ddpg(num_episodes=20000, batch_size=128):
-    env = BinomialEnv()
-    state_dim = 4
-    action_dim = 2
+
+def train_hedging(T_steps=2, n_episodes=10000, option_type='call'):
+    """Train agent to find optimal binary strategy"""
     
-    agent = DDPG(state_dim, action_dim)
+    env = BinomialEnvironment(S0=100, K=100, r=0.05, sigma=0.2, 
+                              T_steps=T_steps, option_type=option_type)
     
-    episode_rewards = []
-    episode_costs = []
-    episode_violations = []
+    state_dim = 5
+    action_dim = env.n_binaries
     
-    print("TRAINING PURE DDPG")
-    print("="*60 + "\n")
+    agent = PPOAgent(state_dim, action_dim, lr=3e-4)
     
-    for episode in range(1, num_episodes + 1):
-        state = env.reset()
-        episode_reward = 0
-        noise = max(0.1, 1.0 - episode / 10000)  # Decay noise
+    print(f"\n{'='*60}")
+    print(f"Training PPO for Binomial Hedging (Node-Paying Binaries)")
+    print(f"Action space: {action_dim} binary positions")
+    print(f"{'='*60}\n")
+    
+    memory = {'states': [], 'actions': [], 'log_probs': [], 'returns': []}
+    best_cost = float('inf')
+    best_positions = None
+    best_error = float('inf')
+    
+    for episode in range(n_episodes):
+        state = np.array([env.K/env.S0, env.r, env.sigma, T_steps, 1 if option_type=='call' else 0])
         
-        done = False
-        trajectory = []
+        action, log_prob = agent.select_action(state)
         
-        while not done:
-            action = agent.select_action(state, noise=noise)
-            next_state, reward, done = env.step(action)
-            
-            trajectory.append((state, action, reward, next_state, done))
-            
-            episode_reward += reward
-            state = next_state
+        cost, total_abs_error, max_error, mse_error, errors, portfolio_values = env.evaluate_strategy(action)
         
-        # Add to replay buffer
-        for transition in trajectory:
-            agent.replay_buffer.push(*transition)
+        # Reward: minimize cost + heavily penalize errors
+        penalty = 10000 * mse_error + 5000 * max_error
+        reward = -cost - penalty
         
-        # Update networks
-        if len(agent.replay_buffer) >= batch_size:
-            for _ in range(2):  # Multiple updates per episode
-                agent.update(batch_size)
+        # Track best solution (prioritize low error, then low cost)
+        if total_abs_error < best_error or (total_abs_error < 1.0 and cost < best_cost):
+            best_error = total_abs_error
+            best_cost = cost
+            best_positions = action.copy()
         
-        # Track metrics
-        metrics = env.get_metrics()
-        episode_rewards.append(episode_reward)
-        episode_costs.append(metrics['cost'])
-        episode_violations.append(1 if metrics['violations'] else 0)
+        memory['states'].append(state)
+        memory['actions'].append(action)
+        memory['log_probs'].append(log_prob)
+        memory['returns'].append(reward)
+        
+        if episode % 20 == 0 and episode > 0:
+            agent.update(memory)
+            memory = {'states': [], 'actions': [], 'log_probs': [], 'returns': []}
         
         if episode % 1000 == 0:
-            window = 100
-            avg_reward = np.mean(episode_rewards[-window:])
-            avg_cost = np.mean(episode_costs[-window:])
-            viol_rate = np.mean(episode_violations[-window:]) * 100
-            
-            print(f"Episode {episode}/{num_episodes}")
-            print(f"  Avg Reward: {avg_reward:.2f}")
-            print(f"  Avg Cost: ${avg_cost:.2f} (Target: ${theoretical_price:.2f})")
-            print(f"  Violation Rate: {viol_rate:.1f}%")
-            print(f"  Noise: {noise:.3f}")
-            print(f"  Sample: {metrics['binaries']}")
-            print()
+            print(f"Ep {episode:5d} | Cost: {cost:8.4f} | TotalAbsErr: {total_abs_error:7.4f} | MaxErr: {max_error:7.4f}")
+            if best_positions is not None:
+                print(f"          | Best so far: Cost=${best_cost:.4f}, TotalAbsErr={best_error:.4f}")
     
-    return agent
-
-# Train
-agent = train_ddpg()
-
-# Evaluate
-print("="*60)
-print("FINAL EVALUATION")
-print("="*60 + "\n")
-
-env = BinomialEnv()
-eval_metrics = []
-
-for _ in range(100):
-    state = env.reset()
-    done = False
+    # Final evaluation
+    print(f"\n{'='*60}")
+    print("FINAL EVALUATION")
+    print(f"{'='*60}")
     
-    while not done:
-        action = agent.select_action(state, noise=0)
-        state, reward, done = env.step(action)
+    if best_positions is not None:
+        cost, total_abs_error, max_error, mse_error, errors, portfolio_values = env.evaluate_strategy(best_positions)
+        
+        print(f"*** BEST REPLICATION STRATEGY ***")
+        for i in range(env.n_binaries):
+            print(f"  b{i+1} = {best_positions[i]:.8f}")
+        
+        print(f"  Initial cost: {cost:.8f}")
+        
+        print(f"  Cost breakdown:")
+        for i, (t, n_ups) in enumerate(env.binary_nodes):
+            contribution = best_positions[i] * env.binary_prices[i]
+            print(f"    Binary_{i+1}: {contribution:.8f} ({best_positions[i]:.4f} units @ {env.binary_prices[i]:.4f})")
+        
+        print(f"  Replication verification:")
+        for path_idx in range(len(errors)):
+            portfolio = portfolio_values[path_idx]
+            payoff = env.terminal_payoffs[path_idx]
+            error = errors[path_idx]
+            status = "✓" if abs(error) < 0.01 else "❌"
+            print(f"    Scenario {path_idx+1}: Portfolio={portfolio:.8f}, Payoff={payoff:.8f}, Error={error:+.10f} {status}")
+        
+        print(f"  Total absolute error: {total_abs_error:.10f}")
+        print(f"  Max absolute error: {max_error:.10f}")
+        print(f"  MSE: {mse_error:.10f}")
+    else:
+        print("\nNo solution found")
     
-    eval_metrics.append(env.get_metrics())
+    return agent, env, best_positions
 
-avg_cost = np.mean([m['cost'] for m in eval_metrics])
-viol_rate = np.mean([1 if m['violations'] else 0 for m in eval_metrics]) * 100
-costs = [m['cost'] for m in eval_metrics]
 
-print(f"Results over 100 episodes:")
-print(f"  Average Cost: ${avg_cost:.2f}")
-print(f"  Theoretical: ${theoretical_price:.2f}")
-print(f"  Cost Error: {abs(avg_cost - theoretical_price)/theoretical_price * 100:.2f}%")
-print(f"  Violation Rate: {viol_rate:.1f}%")
-print(f"  Within ±5%: {sum(1 for c in costs if 0.95*theoretical_price <= c <= 1.05*theoretical_price)}%")
-
-print(f"\nSample solutions:")
-for i in range(3):
-    print(f"  {i+1}. {eval_metrics[i]['binaries']}")
-    print(f"     Cost: ${eval_metrics[i]['cost']:.2f}, Violations: {eval_metrics[i]['violations']}")
-
-print("\n" + "="*60)
-print("TRAINING COMPLETE")
-print("="*60)
+if __name__ == "__main__":
+    print("="*60)
+    print("BINOMIAL HEDGING WITH NODE-PAYING BINARIES")
+    print("No stock, no bond - only binaries!")
+    print("Binaries pay immediately upon reaching the node")
+    print("="*60)
+    
+    agent, env, best_pos = train_hedging(T_steps=2, n_episodes=10000, option_type='call')
+    
