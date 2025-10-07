@@ -2,8 +2,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Normal
-from scipy.optimize import minimize, LinearConstraint
+import torch.nn.functional as F
+from collections import deque
+import random
 
 # Binomial model parameters
 S0 = 100
@@ -32,15 +33,13 @@ payoffs = {
     'DD': max(prices['T2_DD'] - K, 0)
 }
 
-# Path probabilities
+# Theoretical price
 path_probs = {
     'UU': p * p,
     'UD': p * (1-p),
     'DU': (1-p) * p,
     'DD': (1-p) * (1-p)
 }
-
-# Theoretical price
 theoretical_price = np.exp(-r * T) * sum(path_probs[path] * payoffs[path] for path in ['UU', 'UD', 'DU', 'DD'])
 
 # Binary prices
@@ -54,7 +53,7 @@ binary_prices = {
 }
 
 print("="*60)
-print("PROJECTION-BASED A2C FOR T=2 BINOMIAL")
+print("PURE DDPG FOR T=2 BINOMIAL DYNAMIC HEDGING")
 print("="*60)
 print(f"S0={S0}, K={K}, r={r}, T={T}, u={u}, d={d}")
 print(f"Risk-neutral p={p:.4f}")
@@ -62,157 +61,68 @@ print(f"\nPayoffs: UU=${payoffs['UU']:.2f}, UD=${payoffs['UD']:.2f}, DU=${payoff
 print(f"Theoretical Price: ${theoretical_price:.2f}")
 print("="*60 + "\n")
 
-# Actor-Critic Network
-class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=128):
-        super(ActorCritic, self).__init__()
-        
-        self.shared = nn.Sequential(
+# Actor Network
+class Actor(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
+        super(Actor, self).__init__()
+        self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim),
+            nn.Tanh()  # Output in [-1, 1]
         )
         
-        self.actor_mean = nn.Linear(hidden_dim, action_dim)
-        self.actor_log_std = nn.Parameter(torch.zeros(action_dim))
-        
-        self.critic = nn.Linear(hidden_dim, 1)
-        
-        # Initialize
-        nn.init.orthogonal_(self.actor_mean.weight, gain=0.01)
-        nn.init.constant_(self.actor_mean.bias, 0)
-        nn.init.orthogonal_(self.critic.weight, gain=1.0)
-        nn.init.constant_(self.critic.bias, 0)
+        # Initialize with small weights
+        for layer in self.net:
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=0.01)
+                nn.init.constant_(layer.bias, 0)
     
     def forward(self, state):
-        shared_features = self.shared(state)
-        action_mean = self.actor_mean(shared_features)
-        action_std = torch.exp(torch.clamp(self.actor_log_std, -20, 2))
-        value = self.critic(shared_features)
-        return action_mean, action_std, value
-    
-    def get_action(self, state, deterministic=False):
-        action_mean, action_std, value = self.forward(state)
-        
-        if deterministic:
-            # Map to [0, 50]
-            action = torch.tanh(action_mean) * 25 + 25
-            return action, None, value
-        
-        dist = Normal(action_mean, action_std)
-        action_raw = dist.sample()
-        log_prob = dist.log_prob(action_raw).sum(-1, keepdim=True)
-        entropy = dist.entropy().sum(-1, keepdim=True)
-        
-        # Map to [0, 50]
-        action = torch.tanh(action_raw) * 25 + 25
-        
-        return action, log_prob, value, entropy
+        # Map tanh output [-1,1] to [0, 50]
+        return self.net(state) * 25 + 25
 
-# Projection functions
-def project_to_feasible(proposed_binaries, stage, existing_binaries=None):
-    """
-    Project proposed binaries onto feasible region using optimization.
+# Critic Network
+class Critic(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
+        super(Critic, self).__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim + action_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        for layer in self.net:
+            if isinstance(layer, nn.Linear):
+                nn.init.orthogonal_(layer.weight, gain=1.0)
+                nn.init.constant_(layer.bias, 0)
     
-    Stage 0 (T=0): Choose b1, b2
-    Stage 1 (T=1): Choose b3, b4 (if UP) or b5, b6 (if DOWN), knowing b1, b2
-    
-    Constraints: For each terminal scenario, portfolio_value >= payoff
-    """
-    
-    if stage == 0:
-        # At T=0: Choose b1, b2 to minimize cost while satisfying future constraints
-        # We don't know which path will be taken, so we optimize for expected feasibility
-        
-        def objective(x):
-            # Minimize: cost + penalty for infeasibility
-            b1, b2 = x
-            cost = b1 * binary_prices['b1'] + b2 * binary_prices['b2']
-            
-            # Penalty for being far from proposed
-            deviation = (b1 - proposed_binaries[0])**2 + (b2 - proposed_binaries[1])**2
-            
-            return cost + 0.1 * deviation
-        
-        # Bounds: [0, 50]
-        bounds = [(0, 50), (0, 50)]
-        
-        # Initial guess: proposed values
-        x0 = proposed_binaries
-        
-        result = minimize(objective, x0, bounds=bounds, method='L-BFGS-B')
-        
-        return result.x
-    
-    else:
-        # At T=1: Choose b3, b4 or b5, b6 knowing b1, b2
-        b1 = existing_binaries.get('b1', 0)
-        b2 = existing_binaries.get('b2', 0)
-        
-        if 'UP' in stage:  # We're at UP node, choosing b3, b4
-            def objective(x):
-                b3, b4 = x
-                # Cost for this decision
-                cost = b3 * binary_prices['b3'] + b4 * binary_prices['b4']
-                # Deviation from proposed
-                deviation = (b3 - proposed_binaries[0])**2 + (b4 - proposed_binaries[1])**2
-                return cost + 0.1 * deviation
-            
-            def constraint_uu(x):
-                b3, b4 = x
-                return b1 + b3 - payoffs['UU']  # >= 0
-            
-            def constraint_ud(x):
-                b3, b4 = x
-                return b1 + b4 - payoffs['UD']  # >= 0
-            
-            constraints = [
-                {'type': 'ineq', 'fun': constraint_uu},
-                {'type': 'ineq', 'fun': constraint_ud}
-            ]
-            
-        else:  # We're at DOWN node, choosing b5, b6
-            def objective(x):
-                b5, b6 = x
-                cost = b5 * binary_prices['b5'] + b6 * binary_prices['b6']
-                deviation = (b5 - proposed_binaries[0])**2 + (b6 - proposed_binaries[1])**2
-                return cost + 0.1 * deviation
-            
-            def constraint_du(x):
-                b5, b6 = x
-                return b2 + b5 - payoffs['DU']  # >= 0
-            
-            def constraint_dd(x):
-                b5, b6 = x
-                return b2 + b6 - payoffs['DD']  # >= 0
-            
-            constraints = [
-                {'type': 'ineq', 'fun': constraint_du},
-                {'type': 'ineq', 'fun': constraint_dd}
-            ]
-        
-        bounds = [(0, 50), (0, 50)]
-        x0 = proposed_binaries
-        
-        result = minimize(objective, x0, bounds=bounds, constraints=constraints, method='SLSQP')
-        
-        if not result.success:
-            # If optimization fails, use a simple heuristic
-            if 'UP' in stage:
-                # For UU path, need at least payoffs['UU'] - b1
-                b3_min = max(0, payoffs['UU'] - b1)
-                b4_min = max(0, payoffs['UD'] - b1)
-                return np.array([b3_min, b4_min])
-            else:
-                b5_min = max(0, payoffs['DU'] - b2)
-                b6_min = max(0, payoffs['DD'] - b2)
-                return np.array([b5_min, b6_min])
-        
-        return result.x
+    def forward(self, state, action):
+        return self.net(torch.cat([state, action], dim=1))
 
-# Environment with projection
-class ProjectionBinomialEnv:
+# Replay Buffer
+class ReplayBuffer:
+    def __init__(self, capacity=100000):
+        self.buffer = deque(maxlen=capacity)
+    
+    def push(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+    
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        state, action, reward, next_state, done = zip(*batch)
+        return (np.array(state), np.array(action), np.array(reward), 
+                np.array(next_state), np.array(done))
+    
+    def __len__(self):
+        return len(self.buffer)
+
+# Environment
+class BinomialEnv:
     def __init__(self):
         self.reset()
     
@@ -220,8 +130,7 @@ class ProjectionBinomialEnv:
         self.t = 0
         self.path = []
         self.binaries = {}
-        self.proposed_actions = []
-        self.projected_actions = []
+        self.state_price = S0
         return self._get_state()
     
     def _get_state(self):
@@ -229,82 +138,72 @@ class ProjectionBinomialEnv:
             return np.array([0.0, S0/100, 0.0, 2.0], dtype=np.float32)
         elif self.t == 1:
             path_ind = 1.0 if self.path[-1] == 'U' else -1.0
-            price = S0 * u if self.path[-1] == 'U' else S0 * d
-            return np.array([1.0, price/100, path_ind, 1.0], dtype=np.float32)
+            return np.array([1.0, self.state_price/100, path_ind, 1.0], dtype=np.float32)
         else:
-            return np.array([2.0, 0.0, 0.0, 0.0], dtype=np.float32)
+            return np.array([2.0, self.state_price/100, 0.0, 0.0], dtype=np.float32)
     
-    def step(self, proposed_action):
-        if isinstance(proposed_action, torch.Tensor):
-            proposed_action = proposed_action.detach().cpu().numpy()
-        proposed_action = np.array(proposed_action).flatten()
-        
-        self.proposed_actions.append(proposed_action.copy())
+    def step(self, action):
+        if isinstance(action, torch.Tensor):
+            action = action.detach().cpu().numpy()
+        action = np.array(action).flatten()
         
         if self.t == 0:
-            # Project onto feasible region
-            projected = project_to_feasible(proposed_action, stage=0)
-            self.projected_actions.append(projected)
+            self.binaries['b1'] = float(action[0])
+            self.binaries['b2'] = float(action[1])
             
-            self.binaries['b1'] = float(projected[0])
-            self.binaries['b2'] = float(projected[1])
-            
-            # Simulate next move
             next_move = 'U' if np.random.rand() < p else 'D'
             self.path.append(next_move)
+            self.state_price = S0 * u if next_move == 'U' else S0 * d
             self.t = 1
             
-            return self._get_state(), 0.0, False, {}
+            return self._get_state(), 0.0, False
         
         elif self.t == 1:
-            # Project with knowledge of b1, b2
-            stage_label = 'UP' if self.path[-1] == 'U' else 'DOWN'
-            projected = project_to_feasible(proposed_action, stage=stage_label, 
-                                           existing_binaries=self.binaries)
-            self.projected_actions.append(projected)
-            
             if self.path[-1] == 'U':
-                self.binaries['b3'] = float(projected[0])
-                self.binaries['b4'] = float(projected[1])
+                self.binaries['b3'] = float(action[0])
+                self.binaries['b4'] = float(action[1])
             else:
-                self.binaries['b5'] = float(projected[0])
-                self.binaries['b6'] = float(projected[1])
+                self.binaries['b5'] = float(action[0])
+                self.binaries['b6'] = float(action[1])
             
-            # Simulate second move
             next_move = 'U' if np.random.rand() < p else 'D'
             self.path.append(next_move)
             self.t = 2
             
             reward = self._calculate_reward()
-            return self._get_state(), reward, True, {}
+            return self._get_state(), reward, True
     
     def _calculate_reward(self):
         # Calculate cost
-        cost = sum(self.binaries.get(f'b{i}', 0) * binary_prices[f'b{i}'] 
-                   for i in range(1, 7))
+        cost = sum(self.binaries.get(f'b{i}', 0) * binary_prices[f'b{i}'] for i in range(1, 7))
         
-        # Check violations (should be 0 due to projection)
+        # Calculate violations
         violations = []
+        max_violation = 0
         for scenario in ['UU', 'UD', 'DU', 'DD']:
             pv = self._get_portfolio_value(scenario)
             target = payoffs[scenario]
             if pv < target - 0.01:
-                violations.append(target - pv)
+                shortfall = target - pv
+                violations.append(shortfall)
+                max_violation = max(max_violation, shortfall)
         
-        # Reward: minimize cost (constraints automatically satisfied)
+        # Reward structure
+        # 1. Minimize cost
         cost_penalty = abs(cost - theoretical_price)
         
-        # Bonus for being close to theoretical
+        # 2. Heavy penalty for violations
+        violation_penalty = sum(violations) * 1000 if violations else 0
+        
+        # 3. Bonus for success
         bonus = 0
-        if 0.95 * theoretical_price <= cost <= 1.05 * theoretical_price:
-            bonus = 100
+        if not violations:
+            if 0.95 * theoretical_price <= cost <= 1.05 * theoretical_price:
+                bonus = 100
+            else:
+                bonus = 10  # Small bonus for feasibility even if costly
         
-        # Penalty for large deviations from proposed actions (encourages learning)
-        projection_penalty = 0
-        for proposed, projected in zip(self.proposed_actions, self.projected_actions):
-            projection_penalty += np.sum((proposed - projected)**2)
-        
-        reward = -cost_penalty + bonus - 0.01 * projection_penalty
+        reward = -cost_penalty - violation_penalty + bonus
         
         return reward
     
@@ -327,9 +226,7 @@ class ProjectionBinomialEnv:
         return value
     
     def get_metrics(self):
-        cost = sum(self.binaries.get(f'b{i}', 0) * binary_prices[f'b{i}'] 
-                   for i in range(1, 7))
-        
+        cost = sum(self.binaries.get(f'b{i}', 0) * binary_prices[f'b{i}'] for i in range(1, 7))
         violations = []
         for scenario in ['UU', 'UD', 'DU', 'DD']:
             pv = self._get_portfolio_value(scenario)
@@ -337,79 +234,123 @@ class ProjectionBinomialEnv:
             if pv < target - 0.01:
                 violations.append(scenario)
         
-        return {
-            'cost': cost,
-            'violations': violations,
-            'binaries': dict(self.binaries)
-        }
+        return {'cost': cost, 'violations': violations, 'binaries': dict(self.binaries)}
+
+# DDPG Agent
+class DDPG:
+    def __init__(self, state_dim, action_dim, lr_actor=1e-4, lr_critic=1e-3, gamma=0.99, tau=0.001):
+        self.actor = Actor(state_dim, action_dim)
+        self.actor_target = Actor(state_dim, action_dim)
+        self.actor_target.load_state_dict(self.actor.state_dict())
+        
+        self.critic = Critic(state_dim, action_dim)
+        self.critic_target = Critic(state_dim, action_dim)
+        self.critic_target.load_state_dict(self.critic.state_dict())
+        
+        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr_actor)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
+        
+        self.gamma = gamma
+        self.tau = tau
+        self.replay_buffer = ReplayBuffer()
+    
+    def select_action(self, state, noise=0.1):
+        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+        action = self.actor(state_tensor).detach().numpy()[0]
+        
+        if noise > 0:
+            action += np.random.normal(0, noise * 25, size=action.shape)  # Noise scaled to action range
+            action = np.clip(action, 0, 50)
+        
+        return action
+    
+    def update(self, batch_size=128):
+        if len(self.replay_buffer) < batch_size:
+            return None, None
+        
+        state, action, reward, next_state, done = self.replay_buffer.sample(batch_size)
+        
+        state = torch.FloatTensor(state)
+        action = torch.FloatTensor(action)
+        reward = torch.FloatTensor(reward).unsqueeze(1)
+        next_state = torch.FloatTensor(next_state)
+        done = torch.FloatTensor(done).unsqueeze(1)
+        
+        # Update Critic
+        with torch.no_grad():
+            next_action = self.actor_target(next_state)
+            target_q = self.critic_target(next_state, next_action)
+            target_q = reward + (1 - done) * self.gamma * target_q
+        
+        current_q = self.critic(state, action)
+        critic_loss = F.mse_loss(current_q, target_q)
+        
+        self.critic_optimizer.zero_grad()
+        critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
+        self.critic_optimizer.step()
+        
+        # Update Actor
+        actor_loss = -self.critic(state, self.actor(state)).mean()
+        
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
+        self.actor_optimizer.step()
+        
+        # Soft update target networks
+        for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        
+        for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
+            target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+        
+        return critic_loss.item(), actor_loss.item()
 
 # Training
-def train_projection_a2c(num_episodes=10000, gamma=0.99, lr=1e-4):
-    env = ProjectionBinomialEnv()
+def train_ddpg(num_episodes=20000, batch_size=128):
+    env = BinomialEnv()
     state_dim = 4
     action_dim = 2
     
-    model = ActorCritic(state_dim, action_dim)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+    agent = DDPG(state_dim, action_dim)
     
     episode_rewards = []
     episode_costs = []
     episode_violations = []
     
-    print("TRAINING PROJECTION-BASED A2C")
+    print("TRAINING PURE DDPG")
     print("="*60 + "\n")
     
     for episode in range(1, num_episodes + 1):
         state = env.reset()
-        log_probs = []
-        values = []
-        rewards = []
-        entropies = []
+        episode_reward = 0
+        noise = max(0.1, 1.0 - episode / 10000)  # Decay noise
         
         done = False
+        trajectory = []
+        
         while not done:
-            state_tensor = torch.FloatTensor(state).unsqueeze(0)
-            action, log_prob, value, entropy = model.get_action(state_tensor)
+            action = agent.select_action(state, noise=noise)
+            next_state, reward, done = env.step(action)
             
-            log_probs.append(log_prob)
-            values.append(value)
-            entropies.append(entropy)
+            trajectory.append((state, action, reward, next_state, done))
             
-            next_state, reward, done, _ = env.step(action)
-            rewards.append(reward)
+            episode_reward += reward
             state = next_state
         
-        # Calculate returns
-        returns = []
-        R = 0
-        for r in reversed(rewards):
-            R = r + gamma * R
-            returns.insert(0, R)
-        returns = torch.tensor(returns).unsqueeze(1)
+        # Add to replay buffer
+        for transition in trajectory:
+            agent.replay_buffer.push(*transition)
         
-        # Calculate advantages
-        values_tensor = torch.cat(values)
-        advantages = returns - values_tensor.detach()
-        
-        # Losses
-        log_probs_tensor = torch.cat(log_probs)
-        entropies_tensor = torch.cat(entropies)
-        
-        actor_loss = -(log_probs_tensor * advantages).mean()
-        critic_loss = advantages.pow(2).mean()
-        entropy_loss = -entropies_tensor.mean()
-        
-        loss = actor_loss + 0.5 * critic_loss + 0.01 * entropy_loss
-        
-        # Update
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
-        optimizer.step()
+        # Update networks
+        if len(agent.replay_buffer) >= batch_size:
+            for _ in range(2):  # Multiple updates per episode
+                agent.update(batch_size)
         
         # Track metrics
         metrics = env.get_metrics()
-        episode_rewards.append(sum(rewards))
+        episode_rewards.append(episode_reward)
         episode_costs.append(metrics['cost'])
         episode_violations.append(1 if metrics['violations'] else 0)
         
@@ -423,31 +364,30 @@ def train_projection_a2c(num_episodes=10000, gamma=0.99, lr=1e-4):
             print(f"  Avg Reward: {avg_reward:.2f}")
             print(f"  Avg Cost: ${avg_cost:.2f} (Target: ${theoretical_price:.2f})")
             print(f"  Violation Rate: {viol_rate:.1f}%")
+            print(f"  Noise: {noise:.3f}")
             print(f"  Sample: {metrics['binaries']}")
             print()
     
-    return model
+    return agent
 
 # Train
-model = train_projection_a2c()
+agent = train_ddpg()
 
 # Evaluate
 print("="*60)
 print("FINAL EVALUATION")
 print("="*60 + "\n")
 
-env = ProjectionBinomialEnv()
+env = BinomialEnv()
 eval_metrics = []
 
 for _ in range(100):
     state = env.reset()
     done = False
     
-    with torch.no_grad():
-        while not done:
-            state_tensor = torch.FloatTensor(state).unsqueeze(0)
-            action, _, _ = model.get_action(state_tensor, deterministic=True)
-            state, reward, done, _ = env.step(action)
+    while not done:
+        action = agent.select_action(state, noise=0)
+        state, reward, done = env.step(action)
     
     eval_metrics.append(env.get_metrics())
 
@@ -459,9 +399,9 @@ print(f"Results over 100 episodes:")
 print(f"  Average Cost: ${avg_cost:.2f}")
 print(f"  Theoretical: ${theoretical_price:.2f}")
 print(f"  Cost Error: {abs(avg_cost - theoretical_price)/theoretical_price * 100:.2f}%")
-print(f"  Cost Std Dev: ${np.std(costs):.2f}")
 print(f"  Violation Rate: {viol_rate:.1f}%")
-print(f"  Within ±5% of theoretical: {sum(1 for c in costs if 0.95*theoretical_price <= c <= 1.05*theoretical_price)}%")
+print(f"  Within ±5%: {sum(1 for c in costs if 0.95*theoretical_price <= c <= 1.05*theoretical_price)}%")
+
 print(f"\nSample solutions:")
 for i in range(3):
     print(f"  {i+1}. {eval_metrics[i]['binaries']}")
