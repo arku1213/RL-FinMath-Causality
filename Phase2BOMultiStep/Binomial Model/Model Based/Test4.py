@@ -59,7 +59,6 @@ class BinomialEnvironment:
 
 class CEM1Step:
     """CEM for solving 1-step problems with improved stability"""
-    # CEM penalty_mult is kept at 500 (it's essential for the backward step replication)
     def __init__(self, population_size=400, elite_frac=0.1, n_iterations=200,
                  penalty_mult=500, penalty_max_mult=1000): 
         self.population_size = population_size
@@ -182,8 +181,8 @@ def stage1_solve_t_minus_1(env, cem_params=None):
 
 class DynamicHedgingEnv:
     """RL Environment for Stage 2: Learn to reach T-1 targets"""
-    # CHANGE 2: Reintroduce penalty_mult for the RL reward, setting a new default
-    def __init__(self, base_env, penalty_mult=3.0): 
+    # CHANGE: penalty_mult dramatically increased to 100.0
+    def __init__(self, base_env, penalty_mult=100.0): 
         self.base_env = base_env
         self.T_steps = base_env.T_steps
 
@@ -191,7 +190,7 @@ class DynamicHedgingEnv:
         self.state_dim = 6
         self.action_dim = 2
         
-        # New penalty multiplier for T-1 target mismatch
+        # New penalty multiplier for T-1 target mismatch (much higher!)
         self.penalty_mult = penalty_mult
 
     def reset(self):
@@ -272,19 +271,20 @@ class DynamicHedgingEnv:
             target_value = self.base_env.t_minus_1_targets[self.current_n_ups]
             error = abs(self.portfolio_value - target_value)
 
-            # CHANGE 2: Reverting reward to explicitly include a target-matching penalty
-            # Goal: minimize cost AND minimize error (using squared error for stability)
-            
-            # Normalized cost (to be minimized)
+            # Improved reward shaping with catastrophic failure penalty
             normalized_cost = self.total_cost / self.base_env.S0
             
-            # Normalized penalty term
-            # Use relative error squared for better optimization gradient
-            relative_error = error / self.base_env.S0
-            penalty = self.penalty_mult * (relative_error ** 2) 
-            
-            # Total reward
-            reward = -normalized_cost - penalty
+            # Check for catastrophic failure (error > 10% of S0)
+            if error > 0.1 * self.base_env.S0:
+                # Massive penalty for catastrophic failure
+                reward = -1000.0
+            else:
+                # Normalized penalty term (using relative error squared)
+                relative_error = error / self.base_env.S0
+                penalty = self.penalty_mult * (relative_error ** 2) 
+                
+                # Total reward
+                reward = -normalized_cost - penalty
 
             next_state = None
         else:
@@ -311,10 +311,8 @@ class Actor(nn.Module):
         super().__init__()
         self.max_action = max_action
         
-        # 256 is the fixed hidden size
         self.layer1 = nn.Linear(state_dim, 256)
         self.layer2 = nn.Linear(256, 256)
-        # CHANGE 4: Add LayerNorm to the last hidden layer
         self.layer_norm = nn.LayerNorm(256) 
 
         self.mean = nn.Linear(256, action_dim)
@@ -366,8 +364,6 @@ class Critic(nn.Module):
         return self.net(torch.cat([state, action], 1))
     
 class SAC:
-    # Phase 1 initialization (0 - 15k episodes)
-    # CHANGE 3: Set initial learning rates for Phase 1
     def __init__(self, state_dim, action_dim, max_action=2.0,
                  actor_lr=3e-4, critic_lr=1e-3, alpha_lr=1e-4):
         self.actor = Actor(state_dim, action_dim, max_action)
@@ -388,10 +384,10 @@ class SAC:
         self.alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
 
         self.gamma = 0.99
-        self.tau = 0.005
+        self.tau = 0.02 # CHANGE: Increased Polyak averaging rate
         
     def decay_lr(self, new_actor_lr, new_critic_lr):
-        """Manually decay learning rates for Phase 2."""
+        """Manually decay learning rates for the next phase."""
         for param_group in self.actor_optimizer.param_groups:
             param_group['lr'] = new_actor_lr
         for param_group in self.critic1_optimizer.param_groups:
@@ -500,43 +496,49 @@ class ReplayBuffer:
 # Stage 2 training with improvements
 # ----------------------------
 
-def stage2_train_sac(base_env, n_episodes=None, 
+def stage2_train_sac(base_env, n_episodes_override=None, 
                      early_stop_thresh=1e-3, early_stop_patience=1000): 
     
     # Training constants
+    TOTAL_EPISODES = 40000 # CHANGE: Increased total episodes to 40k
     WARMUP_EPISODES = 500
     MIN_CHECKPOINT_EPISODE = 5000 
     REQUIRED_CHECKPOINT_ERROR = 0.01 
-    DECAY_EPISODE = 15000 # CHANGE 3: Episode to decay LR
+    DECAY_EPISODE_P2 = 15000 # Phase 1 -> Phase 2 decay episode
+    DECAY_EPISODE_P3 = 30000 # Phase 2 -> Phase 3 decay episode
 
-    # Phase 1 LRs
-    ACTOR_LR_P1 = 3e-4
-    CRITIC_LR_P1 = 1e-3
-    # Phase 2 LRs (Decayed by 0.1)
-    ACTOR_LR_P2 = 3e-5
-    CRITIC_LR_P2 = 1e-4
+    # Phase LRs
+    ACTOR_LR_P1 = 3e-4; CRITIC_LR_P1 = 1e-3
+    ACTOR_LR_P2 = 3e-5; CRITIC_LR_P2 = 5e-5 # CHANGE: Critic LR lowered to 5e-5
+    ACTOR_LR_P3 = 1e-5; CRITIC_LR_P3 = 3e-5 # CHANGE: Phase 3 LRs
     
-    # Penalty Multiplier (re-introduced for the reward function)
-    RL_PENALTY_MULT = 3.0 # CHANGE 2: Set the new penalty multiplier
+    # Penalty Multiplier (T-1 Error Tightening) - DRAMATICALLY INCREASED
+    RL_PENALTY_MULT = 100.0 # CHANGE: Increased penalty mult to 100.0
 
-    if n_episodes is None:
-        n_episodes = 30000 * max(1, (base_env.T_steps - 1))
+    n_episodes = n_episodes_override if n_episodes_override is not None else TOTAL_EPISODES
     
     best_actor_state_dict = None
-
+    
+    # Calculate theoretical price for sanity checks
+    theoretical_price = sum(base_env.terminal_payoffs[i] * comb(base_env.T_steps, i) * 
+                           (base_env.p ** i) * ((1-base_env.p) ** (base_env.T_steps - i)) *
+                           np.exp(-base_env.r * base_env.T_steps * base_env.dt)
+                           for i in range(base_env.T_steps + 1))
 
     print(f"\n{'='*60}")
     print(f"STAGE 2: Training SAC (Forward to T-1)")
-    print(f"Episodes: {n_episodes:,}")
+    print(f"Total Episodes: {n_episodes:,}")
+    print(f"Theoretical Price: ${theoretical_price:.4f}")
     print(f"RL Penalty Multiplier: {RL_PENALTY_MULT}")
-    print(f"LR Phase 1 (0-{DECAY_EPISODE}): A={ACTOR_LR_P1}, C={CRITIC_LR_P1}")
-    print(f"LR Phase 2 ({DECAY_EPISODE+1}-end): A={ACTOR_LR_P2}, C={CRITIC_LR_P2}")
+    print(f"LR Phase 1 (0-{DECAY_EPISODE_P2}): A={ACTOR_LR_P1}, C={CRITIC_LR_P1}")
+    print(f"LR Phase 2 ({DECAY_EPISODE_P2+1}-{DECAY_EPISODE_P3}): A={ACTOR_LR_P2}, C={CRITIC_LR_P2}")
+    print(f"LR Phase 3 ({DECAY_EPISODE_P3+1}-{n_episodes}): A={ACTOR_LR_P3}, C={CRITIC_LR_P3}")
     print(f"{'='*60}\n")
 
-    # CHANGE 2: Pass new penalty_mult to environment
+    # Pass new penalty_mult to environment
     env = DynamicHedgingEnv(base_env, penalty_mult=RL_PENALTY_MULT)
     
-    # CHANGE 3: Agent initialized with Phase 1 learning rates
+    # Agent initialized with Phase 1 learning rates
     agent = SAC(env.state_dim, env.action_dim, max_action=2.0,
                 actor_lr=ACTOR_LR_P1, critic_lr=CRITIC_LR_P1, alpha_lr=1e-4) 
     replay_buffer = ReplayBuffer()
@@ -549,27 +551,28 @@ def stage2_train_sac(base_env, n_episodes=None,
     recent_costs = deque(maxlen=200)
 
     print_freq = max(100, n_episodes // 20)
+    current_phase = 1
 
     consecutive_good = 0
-    decay_applied = False
 
     for episode in range(1, n_episodes + 1):
         
-        # CHANGE 3: Apply LR decay exactly at the decay episode
-        if episode == DECAY_EPISODE + 1 and not decay_applied:
+        # Phase transition logic
+        if episode == DECAY_EPISODE_P2 + 1 and current_phase == 1:
             agent.decay_lr(ACTOR_LR_P2, CRITIC_LR_P2)
-            decay_applied = True
+            current_phase = 2
+        elif episode == DECAY_EPISODE_P3 + 1 and current_phase == 2:
+            agent.decay_lr(ACTOR_LR_P3, CRITIC_LR_P3)
+            current_phase = 3
             
         state = env.reset()
         
-        # Determine if we are in the warm-up phase
         is_warmup = episode <= WARMUP_EPISODES
         
         # Simulate an episode
         while True:
             # Action selection: random for warm-up, SAC policy otherwise
             if is_warmup:
-                # Random non-negative action (up to max_action=2.0)
                 action = np.random.uniform(0.0, agent.actor.max_action, env.action_dim) 
             else:
                 action = agent.select_action(state)
@@ -594,21 +597,34 @@ def stage2_train_sac(base_env, n_episodes=None,
         recent_errors.append(info['target_error'])
         recent_costs.append(info['cost'])
         
-        # Checkpoint logic
+        # Checkpoint logic with cost validity check
+        # Note: best_cost and best_error are initialized to inf, so the first
+        # checkpoint is only saved when error < REQUIRED_CHECKPOINT_ERROR AND cost is reasonable.
         if episode >= MIN_CHECKPOINT_EPISODE and info['target_error'] < REQUIRED_CHECKPOINT_ERROR:
-            # Only save if this model is better AND it meets the error threshold
-            if info['target_error'] < best_error:
-                best_error = info['target_error']
-                best_cost = info['cost']
-                best_episode = episode
-                # Checkpoint actor state dictionary
-                best_actor_state_dict = agent.actor.state_dict().copy()
-                consecutive_good = 0
-            else:
-                if info['target_error'] < early_stop_thresh:
-                    consecutive_good += 1
-                else:
+            # CRITICAL: Ensure cost is reasonable (not near-zero degenerate solution)
+            if info['cost'] > theoretical_price * 0.5:  # At least 50% of theoretical
+                # We track the cost-efficient solution that meets the error requirement
+                if info['target_error'] < best_error - 1e-6:
+                    best_error = info['target_error']
+                    best_cost = info['cost']
+                    best_episode = episode
+                    # Checkpoint actor state dictionary
+                    best_actor_state_dict = agent.actor.state_dict().copy()
                     consecutive_good = 0
+                # Also reset consecutive_good if we achieve a very low error
+                else:
+                    if info['target_error'] < early_stop_thresh:
+                        consecutive_good += 1
+                    else:
+                        consecutive_good = 0
+            # If cost is unrealistically low, don't checkpoint but still track for early stopping
+            elif info['target_error'] < early_stop_thresh:
+                consecutive_good += 1
+            else:
+                consecutive_good = 0
+        else:
+            # Reset counter if we don't meet error threshold
+            consecutive_good = 0
         
         # Early stopping condition
         if consecutive_good >= early_stop_patience:
@@ -620,22 +636,36 @@ def stage2_train_sac(base_env, n_episodes=None,
             avg_cost = float(np.mean(recent_costs)) if len(recent_costs) > 0 else float('nan')
             progress = 100.0 * episode / n_episodes
             
-            status = "(Warmup)" if is_warmup else ""
+            status = f"(P{current_phase})" if not is_warmup else "(Warmup)"
 
             print(f"Episode {episode:6d} ({progress:5.1f}%) {status} | Avg Cost: ${avg_cost:8.4f} | "
                   f"Avg T-1 Error: {avg_error:8.6f}")
+            # Corrected printout to show the true best recorded cost/error
             if best_episode != -1:
                 print(f"                          | Best so far (ep {best_episode}): Cost=${best_cost:.4f}, Error={best_error:.6f}")
 
     print(f"\n{'='*60}")
     print("STAGE 2 COMPLETE")
     print(f"{'='*60}")
-    print(f"Best T-1 Target Error: {best_error:.6f} (episode {best_episode})")
-    print(f"Best Cost: ${best_cost:.4f}")
+    
+    # Sanity check before loading best weights
+    if best_episode == -1:
+        print("WARNING: No valid checkpoint was saved during training!")
+        print("The agent may not have learned a good policy. Using final weights.")
+    elif best_cost < theoretical_price * 0.5:
+        print(f"WARNING: Best checkpoint has unrealistic cost (${best_cost:.4f} vs theoretical ${theoretical_price:.4f})")
+        print("This indicates the agent found a degenerate solution. Using final weights instead.")
+        best_actor_state_dict = None  # Don't load the bad checkpoint
+    else:
+        print(f"Best T-1 Target Error: {best_error:.6f} (episode {best_episode})")
+        print(f"Best Cost: ${best_cost:.4f}")
+        print(f"Loading best checkpoint weights...")
 
-    # Load best actor weights into agent (if saved)
+    # Load best actor weights into agent (if saved and valid)
     if best_actor_state_dict is not None:
         agent.actor.load_state_dict(best_actor_state_dict)
+    else:
+        print("Using final training weights for evaluation.")
 
     return agent, env
 
@@ -795,16 +825,8 @@ def full_evaluation(base_env, agent, rl_env):
 
 if __name__ == "__main__":
     
-    # ----------------------------------------------------
-    # NOTE ON STEP 5: Multiple Random Seeds
-    # To implement Step 5, you would need to wrap this entire
-    # block in a loop, set a different torch/numpy random seed
-    # at the start of each loop iteration, and aggregate the 
-    # results from full_evaluation for comparison.
-    # ----------------------------------------------------
-    
     print("="*60)
-    print("HYBRID APPROACH: MINIMAL BACKWARD + SAC FORWARD (TUNING PASS #3)")
+    print("HYBRID APPROACH: MINIMAL BACKWARD + SAC FORWARD (FIXED)")
     print("="*60)
     
     # Set a fixed seed for reproducibility of this single run
@@ -820,13 +842,18 @@ if __name__ == "__main__":
     # Stage 1: Solve T-1
     t1_solutions = stage1_solve_t_minus_1(base_env, cem_params=None)
 
-    # Stage 2: Train SAC with two-phase LR schedule and new penalty
-    agent, rl_env = stage2_train_sac(base_env, n_episodes=30000,
+    # Stage 2: Train SAC with three-phase LR schedule and tighter penalty
+    agent, rl_env = stage2_train_sac(base_env, n_episodes_override=40000,
                                      early_stop_thresh=1e-3, early_stop_patience=1000)
 
     # Full evaluation on ALL paths
     full_evaluation(base_env, agent, rl_env)
 
     print("\n" + "="*60)
-    print("Notes: LayerNorm added, two-phase LR implemented, penalty_mult re-introduced.")
+    print("IMPROVEMENTS IMPLEMENTED:")
+    print("- Penalty multiplier increased to 100.0 (from 4.0)")
+    print("- Catastrophic failure penalty (-1000) for errors > 10% of S0")
+    print("- Cost validity check in checkpointing (must be > 50% of theoretical)")
+    print("- Sanity checks before loading best weights")
+    print("- Three-phase LR schedule and faster target network update (tau=0.02)")
     print("="*60)
