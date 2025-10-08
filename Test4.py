@@ -59,6 +59,7 @@ class BinomialEnvironment:
 
 class CEM1Step:
     """CEM for solving 1-step problems with improved stability"""
+    # CEM penalty_mult is kept at 500 (it's essential for the backward step replication)
     def __init__(self, population_size=400, elite_frac=0.1, n_iterations=200,
                  penalty_mult=500, penalty_max_mult=1000): 
         self.population_size = population_size
@@ -128,7 +129,6 @@ def stage1_solve_t_minus_1(env, cem_params=None):
     print(f"{'='*60}\n")
 
     if cem_params is None:
-        # Use new default for CEM
         cem = CEM1Step(penalty_mult=500)
     else:
         cem = CEM1Step(**cem_params)
@@ -182,13 +182,17 @@ def stage1_solve_t_minus_1(env, cem_params=None):
 
 class DynamicHedgingEnv:
     """RL Environment for Stage 2: Learn to reach T-1 targets"""
-    def __init__(self, base_env): 
+    # CHANGE 2: Reintroduce penalty_mult for the RL reward, setting a new default
+    def __init__(self, base_env, penalty_mult=3.0): 
         self.base_env = base_env
         self.T_steps = base_env.T_steps
 
         # State/action dimensions
         self.state_dim = 6
         self.action_dim = 2
+        
+        # New penalty multiplier for T-1 target mismatch
+        self.penalty_mult = penalty_mult
 
     def reset(self):
         """Start at T=0"""
@@ -218,12 +222,12 @@ class DynamicHedgingEnv:
 
         n_ups_norm = self.current_n_ups / (self.current_time + 1)
 
-        # Normalize state features by S0
+        # State normalization by S0
         state = np.array([
             self.current_time / max(1, self.T_steps),
             S_t / self.base_env.S0,
             n_ups_norm,
-            self.portfolio_value / self.base_env.S0,
+            self.portfolio_value / self.base_env.S0, 
             expected_target / self.base_env.S0,
             time_to_t_minus_1 / max(1, self.T_steps)
         ], dtype=np.float32)
@@ -232,7 +236,6 @@ class DynamicHedgingEnv:
 
     def step(self, action):
         """Take action (purchase binaries) and simulate price move"""
-        # Action is [b_down, b_up]
         action = np.array(action, dtype=float)
         action = np.clip(action, 0.0, None)
 
@@ -269,11 +272,19 @@ class DynamicHedgingEnv:
             target_value = self.base_env.t_minus_1_targets[self.current_n_ups]
             error = abs(self.portfolio_value - target_value)
 
-            # New Reward Function: reward = -abs(error)/S0 - 0.1 * abs(cost)/S0
-            normalized_error = error / self.base_env.S0
+            # CHANGE 2: Reverting reward to explicitly include a target-matching penalty
+            # Goal: minimize cost AND minimize error (using squared error for stability)
+            
+            # Normalized cost (to be minimized)
             normalized_cost = self.total_cost / self.base_env.S0
             
-            reward = -normalized_error - 0.1 * normalized_cost
+            # Normalized penalty term
+            # Use relative error squared for better optimization gradient
+            relative_error = error / self.base_env.S0
+            penalty = self.penalty_mult * (relative_error ** 2) 
+            
+            # Total reward
+            reward = -normalized_cost - penalty
 
             next_state = None
         else:
@@ -299,19 +310,23 @@ class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, max_action=2.0):
         super().__init__()
         self.max_action = max_action
-
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU()
-        )
+        
+        # 256 is the fixed hidden size
+        self.layer1 = nn.Linear(state_dim, 256)
+        self.layer2 = nn.Linear(256, 256)
+        # CHANGE 4: Add LayerNorm to the last hidden layer
+        self.layer_norm = nn.LayerNorm(256) 
 
         self.mean = nn.Linear(256, action_dim)
         self.log_std = nn.Linear(256, action_dim)
 
     def forward(self, state):
-        x = self.net(state)
+        x = F.relu(self.layer1(state))
+        x = F.relu(self.layer2(x))
+        
+        # Apply LayerNorm before output heads
+        x = self.layer_norm(x) 
+        
         mean = self.mean(x)
         log_std = self.log_std(x)
         log_std = torch.clamp(log_std, -20, 2)
@@ -326,11 +341,10 @@ class Actor(nn.Module):
 
         normal = torch.distributions.Normal(mean, std)
         x_t = normal.rsample()
-        action = torch.tanh(x_t) * self.max_action # Apply new max_action
+        action = torch.tanh(x_t) * self.max_action 
 
         # Log prob correction for tanh
         log_prob = normal.log_prob(x_t)
-        # Prevent numerical issues
         log_prob = log_prob - torch.log(self.max_action * (1 - torch.tanh(x_t).pow(2)) + 1e-6)
         log_prob = log_prob.sum(1, keepdim=True)
 
@@ -352,8 +366,10 @@ class Critic(nn.Module):
         return self.net(torch.cat([state, action], 1))
     
 class SAC:
+    # Phase 1 initialization (0 - 15k episodes)
+    # CHANGE 3: Set initial learning rates for Phase 1
     def __init__(self, state_dim, action_dim, max_action=2.0,
-                 actor_lr=3e-4, critic_lr=3e-4, alpha_lr=1e-4):
+                 actor_lr=3e-4, critic_lr=1e-3, alpha_lr=1e-4):
         self.actor = Actor(state_dim, action_dim, max_action)
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
 
@@ -373,6 +389,16 @@ class SAC:
 
         self.gamma = 0.99
         self.tau = 0.005
+        
+    def decay_lr(self, new_actor_lr, new_critic_lr):
+        """Manually decay learning rates for Phase 2."""
+        for param_group in self.actor_optimizer.param_groups:
+            param_group['lr'] = new_actor_lr
+        for param_group in self.critic1_optimizer.param_groups:
+            param_group['lr'] = new_critic_lr
+        for param_group in self.critic2_optimizer.param_groups:
+            param_group['lr'] = new_critic_lr
+        print(f"--- Learning rates decayed: Actor LR={new_actor_lr}, Critic LR={new_critic_lr} ---")
 
     def select_action(self, state, evaluate=False):
         state = torch.FloatTensor(state).unsqueeze(0)
@@ -474,14 +500,25 @@ class ReplayBuffer:
 # Stage 2 training with improvements
 # ----------------------------
 
-# REMOVED: checkpoint_dir from function signature
 def stage2_train_sac(base_env, n_episodes=None, 
                      early_stop_thresh=1e-3, early_stop_patience=1000): 
     
+    # Training constants
     WARMUP_EPISODES = 500
     MIN_CHECKPOINT_EPISODE = 5000 
     REQUIRED_CHECKPOINT_ERROR = 0.01 
+    DECAY_EPISODE = 15000 # CHANGE 3: Episode to decay LR
+
+    # Phase 1 LRs
+    ACTOR_LR_P1 = 3e-4
+    CRITIC_LR_P1 = 1e-3
+    # Phase 2 LRs (Decayed by 0.1)
+    ACTOR_LR_P2 = 3e-5
+    CRITIC_LR_P2 = 1e-4
     
+    # Penalty Multiplier (re-introduced for the reward function)
+    RL_PENALTY_MULT = 3.0 # CHANGE 2: Set the new penalty multiplier
+
     if n_episodes is None:
         n_episodes = 30000 * max(1, (base_env.T_steps - 1))
     
@@ -491,12 +528,17 @@ def stage2_train_sac(base_env, n_episodes=None,
     print(f"\n{'='*60}")
     print(f"STAGE 2: Training SAC (Forward to T-1)")
     print(f"Episodes: {n_episodes:,}")
+    print(f"RL Penalty Multiplier: {RL_PENALTY_MULT}")
+    print(f"LR Phase 1 (0-{DECAY_EPISODE}): A={ACTOR_LR_P1}, C={CRITIC_LR_P1}")
+    print(f"LR Phase 2 ({DECAY_EPISODE+1}-end): A={ACTOR_LR_P2}, C={CRITIC_LR_P2}")
     print(f"{'='*60}\n")
 
-    env = DynamicHedgingEnv(base_env)
+    # CHANGE 2: Pass new penalty_mult to environment
+    env = DynamicHedgingEnv(base_env, penalty_mult=RL_PENALTY_MULT)
     
+    # CHANGE 3: Agent initialized with Phase 1 learning rates
     agent = SAC(env.state_dim, env.action_dim, max_action=2.0,
-                actor_lr=3e-4, critic_lr=3e-4, alpha_lr=1e-4) 
+                actor_lr=ACTOR_LR_P1, critic_lr=CRITIC_LR_P1, alpha_lr=1e-4) 
     replay_buffer = ReplayBuffer()
 
     best_error = float('inf')
@@ -509,8 +551,15 @@ def stage2_train_sac(base_env, n_episodes=None,
     print_freq = max(100, n_episodes // 20)
 
     consecutive_good = 0
+    decay_applied = False
 
     for episode in range(1, n_episodes + 1):
+        
+        # CHANGE 3: Apply LR decay exactly at the decay episode
+        if episode == DECAY_EPISODE + 1 and not decay_applied:
+            agent.decay_lr(ACTOR_LR_P2, CRITIC_LR_P2)
+            decay_applied = True
+            
         state = env.reset()
         
         # Determine if we are in the warm-up phase
@@ -520,7 +569,7 @@ def stage2_train_sac(base_env, n_episodes=None,
         while True:
             # Action selection: random for warm-up, SAC policy otherwise
             if is_warmup:
-                # Random non-negative action (up to max_action)
+                # Random non-negative action (up to max_action=2.0)
                 action = np.random.uniform(0.0, agent.actor.max_action, env.action_dim) 
             else:
                 action = agent.select_action(state)
@@ -745,18 +794,33 @@ def full_evaluation(base_env, agent, rl_env):
 # ----------------------------
 
 if __name__ == "__main__":
+    
+    # ----------------------------------------------------
+    # NOTE ON STEP 5: Multiple Random Seeds
+    # To implement Step 5, you would need to wrap this entire
+    # block in a loop, set a different torch/numpy random seed
+    # at the start of each loop iteration, and aggregate the 
+    # results from full_evaluation for comparison.
+    # ----------------------------------------------------
+    
     print("="*60)
-    print("HYBRID APPROACH: MINIMAL BACKWARD + SAC FORWARD (FINAL CLEANUP)")
+    print("HYBRID APPROACH: MINIMAL BACKWARD + SAC FORWARD (TUNING PASS #3)")
     print("="*60)
+    
+    # Set a fixed seed for reproducibility of this single run
+    SEED = 42 
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
+    random.seed(SEED)
+    print(f"Using Seed: {SEED}")
 
     # Initial setup for a T=2 example
     base_env = BinomialEnvironment(T_steps=2, option_type='call')
 
-    # Stage 1: Solve T-1 with gentler CEM penalties
+    # Stage 1: Solve T-1
     t1_solutions = stage1_solve_t_minus_1(base_env, cem_params=None)
 
-    # Stage 2: Train SAC with improved defaults and parameters
-    # The redundant checkpoint_dir argument is removed from the call
+    # Stage 2: Train SAC with two-phase LR schedule and new penalty
     agent, rl_env = stage2_train_sac(base_env, n_episodes=30000,
                                      early_stop_thresh=1e-3, early_stop_patience=1000)
 
@@ -764,5 +828,5 @@ if __name__ == "__main__":
     full_evaluation(base_env, agent, rl_env)
 
     print("\n" + "="*60)
-    print("Notes: All 'os' related code has been removed.")
+    print("Notes: LayerNorm added, two-phase LR implemented, penalty_mult re-introduced.")
     print("="*60)
