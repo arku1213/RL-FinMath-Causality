@@ -112,28 +112,63 @@ class BinomialEnvironment:
 
 
 # ----------------------------
-# Policy Network (Larger, with more capacity)
+# Backward Induction Module
+# ----------------------------
+
+def compute_t_minus_1_targets(env):
+    """
+    ANALYTICAL: Use backward induction to compute target values at T-1.
+    These guide the RL agent.
+    
+    Returns:
+        targets: dict mapping (T-1, n_ups) -> target portfolio value
+    """
+    print(f"\n{'='*60}")
+    print("BACKWARD INDUCTION: Computing T-1 Targets")
+    print(f"{'='*60}")
+    
+    targets = {}
+    t = env.T_steps - 1
+    
+    for n_ups in range(t + 1):
+        # Children at T
+        target_up = env.terminal_payoffs[n_ups + 1]
+        target_down = env.terminal_payoffs[n_ups]
+        
+        # Risk-neutral expectation discounted to T-1
+        expected_value = env.p * target_up + (1 - env.p) * target_down
+        pv_target = expected_value * np.exp(-env.r * env.dt)
+        
+        targets[(t, n_ups)] = pv_target
+        
+        print(f"Node ({t}, {n_ups}): Target = ${pv_target:.6f}")
+        print(f"  → From: {env.p:.3f} × ${target_up:.2f} + "
+              f"{1-env.p:.3f} × ${target_down:.2f}, discounted")
+    
+    print(f"{'='*60}\n")
+    
+    return targets
+
+
+# ----------------------------
+# Policy Network
 # ----------------------------
 
 class PolicyNetwork(nn.Module):
     """Deep neural network that learns optimal binary allocation."""
-    def __init__(self, state_dim, n_binaries, hidden_dim=512):
+    def __init__(self, state_dim, n_binaries, hidden_dim=256):
         super().__init__()
         
         self.n_binaries = n_binaries
         
-        # Deeper network with more capacity
+        # Deep network
         self.network = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.LayerNorm(hidden_dim // 2),
-            nn.Linear(hidden_dim // 2, n_binaries)
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, n_binaries)
         )
         
     def forward(self, state):
@@ -146,7 +181,7 @@ class PolicyNetwork(nn.Module):
 
 class ModelBasedPlanner:
     """Uses the perfect model to simulate outcomes."""
-    def __init__(self, environment, n_simulation_paths=100):
+    def __init__(self, environment, n_simulation_paths=50):
         self.env = environment
         self.n_simulation_paths = n_simulation_paths
         
@@ -187,26 +222,26 @@ class ModelBasedPlanner:
 
 
 # ----------------------------
-# Pure Deep Model-Based RL Agent
+# Hybrid Deep RL Agent
 # ----------------------------
 
-class PureDeepRLAgent:
-    """Pure deep RL - learns from terminal payoffs only, no backward induction."""
-    def __init__(self, environment, state_dim=6, hidden_dim=512, lr=3e-4):
+class HybridDeepRLAgent:
+    """
+    Hybrid approach:
+    - Uses backward induction to compute T-1 targets (analytical)
+    - Uses deep RL to learn how to reach those targets (learning)
+    """
+    def __init__(self, environment, t_minus_1_targets, state_dim=6, hidden_dim=256, lr=1e-3):
         self.env = environment
         self.n_binaries = environment.n_binaries
+        self.t_minus_1_targets = t_minus_1_targets
         
-        # Deeper policy network
+        # Deep policy network
         self.policy = PolicyNetwork(state_dim, self.n_binaries, hidden_dim)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr, weight_decay=1e-5)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
         
-        # Learning rate scheduler
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=200
-        )
-        
-        # Model-based planner (more simulations)
-        self.planner = ModelBasedPlanner(environment, n_simulation_paths=100)
+        # Model-based planner
+        self.planner = ModelBasedPlanner(environment, n_simulation_paths=50)
         
         # Training history
         self.history = {
@@ -245,8 +280,9 @@ class PureDeepRLAgent:
     
     def compute_loss(self, binary_values_tensor):
         """
-        Compute loss - ONLY checks terminal payoffs (pure deep RL).
-        No backward induction, no intermediate targets.
+        HYBRID LOSS:
+        - Checks if portfolio reaches T-1 targets (from backward induction)
+        - Uses model-based simulation to evaluate
         """
         # Convert tensor to holdings dictionary for simulation
         binary_holdings = {}
@@ -256,35 +292,49 @@ class PureDeepRLAgent:
         # Simulate outcomes
         outcomes = self.planner.simulate_outcomes(binary_holdings)
         
-        # Compute losses - ONLY terminal errors
+        # Compute losses: Check T-1 targets AND terminal payoffs
         errors_list = []
         costs_list = []
         
         for outcome in outcomes:
-            # Recompute portfolio value with gradients
-            portfolio_value = torch.tensor(0.0, dtype=torch.float32)
+            # Compute cost
             cost = torch.tensor(0.0, dtype=torch.float32)
-            
             for i, (t, n_ups) in enumerate(self.env.binaries):
-                # Cost contribution
                 cost += binary_values_tensor[i] * self.env.binary_prices[i]
+            
+            # Track portfolio value and check at T-1 AND terminal
+            portfolio_value = torch.tensor(0.0, dtype=torch.float32)
+            path_errors = []
+            
+            for step_idx, (t, n_ups, move) in enumerate(outcome['path'][1:]):  # Skip root
+                # Add binary payoff at this node
+                binary_idx = self.env.binaries.index((t, n_ups))
+                portfolio_value = portfolio_value + binary_values_tensor[binary_idx]
                 
-                # Portfolio value contribution (if node is in path)
-                if (t, n_ups) in [(node[0], node[1]) for node in outcome['path'][1:]]:
-                    portfolio_value = portfolio_value + binary_values_tensor[i]
+                # Check error at T-1 (guided by backward induction)
+                if t == self.env.T_steps - 1:
+                    target = self.t_minus_1_targets[(t, n_ups)]
+                    error = torch.abs(portfolio_value - target)
+                    path_errors.append(error * 10.0)  # Weight T-1 errors heavily!
+                
+                # Check error at terminal
+                if t == self.env.T_steps:
+                    target = outcome['target']
+                    error = torch.abs(portfolio_value - target)
+                    path_errors.append(error)
             
-            # Error for this path (terminal only!)
-            target = outcome['target']
-            error = torch.abs(portfolio_value - target)
+            # Average error across checkpoints in this path
+            if len(path_errors) > 0:
+                path_error = torch.stack(path_errors).mean()
+                errors_list.append(path_error)
             
-            errors_list.append(error)
             costs_list.append(cost)
         
         # Stack into tensors
         errors = torch.stack(errors_list)
         costs = torch.stack(costs_list)
         
-        # Loss components
+        # MSE loss for replication error
         mse_loss = (errors ** 2).mean()
         
         # Cost penalty
@@ -297,7 +347,7 @@ class PureDeepRLAgent:
             np.exp(-self.env.r * self.env.T_steps * self.env.dt)
             for i in range(self.env.T_steps + 1)
         )
-        cost_penalty = 0.1 * (cost_mean - theoretical_price) ** 2  # Increased weight
+        cost_penalty = 0.01 * (cost_mean - theoretical_price) ** 2
         
         # Total loss
         total_loss = mse_loss + cost_penalty
@@ -323,22 +373,18 @@ class PureDeepRLAgent:
         
         return loss.item(), mse, cost
     
-    def train(self, n_episodes=5000, eval_freq=100):
-        """Train the agent using pure deep model-based RL."""
+    def train(self, n_episodes=2000, eval_freq=50):
+        """Train the agent using hybrid approach."""
         print(f"\n{'='*60}")
-        print("PURE DEEP MODEL-BASED RL TRAINING")
-        print("NO backward induction - learns from terminal payoffs only!")
+        print("HYBRID DEEP MODEL-BASED RL TRAINING")
+        print(f"Backward Induction guides T-1 targets")
+        print(f"Deep RL learns how to reach them")
         print(f"Episodes: {n_episodes}")
-        print(f"Simulating {self.planner.n_simulation_paths} paths per update")
         print(f"{'='*60}\n")
         
         for episode in range(1, n_episodes + 1):
             # Train step
             loss, mse, cost = self.train_step()
-            
-            # Update learning rate based on loss
-            if episode % 50 == 0:
-                self.scheduler.step(loss)
             
             # Periodic evaluation
             if episode % eval_freq == 0 or episode == 1:
@@ -353,7 +399,7 @@ class PureDeepRLAgent:
                 self.history['mean_cost'].append(metrics['mean_cost'])
                 self.history['loss'].append(loss)
                 
-                print(f"Episode {episode:5d} | Loss: {loss:.6f} | "
+                print(f"Episode {episode:4d} | Loss: {loss:.6f} | "
                       f"Mean Error: {metrics['mean_error']:.6f} | "
                       f"Max Error: {metrics['max_error']:.6f} | "
                       f"Cost: ${metrics['mean_cost']:.4f}")
@@ -381,7 +427,11 @@ def exhaustive_evaluation(agent):
     
     print("Learned Binary Holdings:")
     for (t, n_ups), quantity in sorted(binary_holdings.items()):
-        print(f"  Node ({t}, {n_ups}): {quantity:.6f} units")
+        if (t, n_ups) in agent.t_minus_1_targets:
+            target = agent.t_minus_1_targets[(t, n_ups)]
+            print(f"  Node ({t}, {n_ups}): {quantity:.6f} units (T-1 target: ${target:.6f})")
+        else:
+            print(f"  Node ({t}, {n_ups}): {quantity:.6f} units")
     
     # Generate all paths
     def generate_all_paths(t, n_ups, path):
@@ -402,13 +452,28 @@ def exhaustive_evaluation(agent):
         target = env.get_payoff_for_path(path)
         error = portfolio_value - target
         
+        # Also check T-1 error
+        t_minus_1_step = env.T_steps  # This is the index in path for T-1
+        t_minus_1_node = path[t_minus_1_step]  # Node at T-1
+        t, n_ups, _ = t_minus_1_node
+        
+        # Calculate portfolio value at T-1 (only count binaries UP TO t-1!)
+        portfolio_at_t_minus_1 = 0.0
+        for node_t, node_n_ups, _ in path[1:t_minus_1_step+1]:  # Up to and including T-1
+            if (node_t, node_n_ups) in binary_holdings:
+                portfolio_at_t_minus_1 += binary_holdings[(node_t, node_n_ups)]
+        
+        t_minus_1_target = agent.t_minus_1_targets.get((t, n_ups), 0)
+        t_minus_1_error = abs(portfolio_at_t_minus_1 - t_minus_1_target)
+        
         results.append({
             'path': path,
             'portfolio': portfolio_value,
             'target': target,
             'error': error,
             'abs_error': abs(error),
-            'cost': cost
+            'cost': cost,
+            't_minus_1_error': t_minus_1_error
         })
     
     # Print results
@@ -419,10 +484,12 @@ def exhaustive_evaluation(agent):
         print(f"  Path {i+1}: {path_str}")
         print(f"    Portfolio=${result['portfolio']:.6f}, Target=${result['target']:.6f}, "
               f"Error={result['error']:+.8f} {status}")
+        print(f"    T-1 Error: {result['t_minus_1_error']:.6f}")
     
     # Aggregate statistics
     errors = [r['abs_error'] for r in results]
     costs = [r['cost'] for r in results]
+    t_minus_1_errors = [r['t_minus_1_error'] for r in results]
     
     print(f"\n{'='*60}")
     print("AGGREGATE RESULTS")
@@ -430,6 +497,9 @@ def exhaustive_evaluation(agent):
     print(f"Total Absolute Error: {sum(errors):.10f}")
     print(f"Max Error: {max(errors):.10f}")
     print(f"Mean Error: {np.mean(errors):.10f}")
+    print(f"\nT-1 Errors (Guided by Backward Induction):")
+    print(f"  Max: {max(t_minus_1_errors):.10f}")
+    print(f"  Mean: {np.mean(t_minus_1_errors):.10f}")
     
     # Theoretical price
     theoretical = sum(
@@ -456,7 +526,7 @@ def exhaustive_evaluation(agent):
 
 if __name__ == "__main__":
     print("="*60)
-    print("PURE DEEP MODEL-BASED RL (No Backward Induction)")
+    print("HYBRID: BACKWARD INDUCTION + DEEP MODEL-BASED RL")
     print("="*60)
     
     # Set seeds
@@ -478,24 +548,28 @@ if __name__ == "__main__":
     print(f"  {env.n_binaries} binaries (complete market)")
     print(f"  Risk-neutral probability p={env.p:.4f}")
     
-    # Create agent
-    agent = PureDeepRLAgent(
+    # STEP 1: Backward induction for T-1 targets (analytical)
+    t_minus_1_targets = compute_t_minus_1_targets(env)
+    
+    # STEP 2: Deep RL learns to reach those targets
+    agent = HybridDeepRLAgent(
         environment=env,
+        t_minus_1_targets=t_minus_1_targets,
         state_dim=6,
-        hidden_dim=512,
-        lr=3e-4
+        hidden_dim=256,
+        lr=1e-3
     )
     
-    # Train using pure deep model-based RL
-    agent.train(n_episodes=5000, eval_freq=100)
+    # Train
+    agent.train(n_episodes=2000, eval_freq=50)
     
     # Exhaustive evaluation
     results = exhaustive_evaluation(agent)
     
     print("\n" + "="*60)
-    print("PURE DEEP RL APPROACH:")
-    print("- NO backward induction used")
-    print("- NO intermediate targets")
-    print("- Learns ONLY from terminal payoff errors")
-    print("- Network must discover structure on its own")
+    print("HYBRID APPROACH SUMMARY:")
+    print("✓ Backward induction computes T-1 targets (analytical)")
+    print("✓ Deep RL learns optimal binary allocation (learning)")
+    print("✓ Combines rigor + flexibility")
+    print("✓ Scales to any T!")
     print("="*60)
