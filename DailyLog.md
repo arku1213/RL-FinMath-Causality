@@ -77,7 +77,20 @@ Day 14 - Thrusday, October 2nd:
 Day 15 - Friday, October 3rd:
 
 - SAC didn't work as expected, tried Thompson Sampling
-- Trying PPO
+- Trying PPO for Multi-step Binary Options
+- Fixed Complete & Incomplete Binary Options One-step cases
+
+Day 16 - Monday, October 6th:
+
+- Refined Complete & Incomplete Binary Options One-step cases
+- Looking into Deep RL for Multi-step Binary Options - STUCK
+
+Day 17 - Tuesday, October 7th:
+
+- Trying to implement Dynamic Programming (Hybrid Approach)
+- Moving away from Deep RL - looking into ES
+
+Day 18 - Wednesday, October 8th:
 
 Next goals:
 
