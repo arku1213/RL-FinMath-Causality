@@ -12,7 +12,7 @@ class ThompsonSamplingBackwardInduction:
     """
     
     def __init__(self, S0=100, K=100, r=0.05, sigma=0.2, T_steps=2, dt=1.0, 
-                 episodes_per_node=5000, prior_mean=0.0, prior_std=15.0):
+                 episodes_per_node=None, prior_mean=0.0, prior_std=None):
         """
         Parameters:
         -----------
@@ -22,9 +22,11 @@ class ThompsonSamplingBackwardInduction:
         sigma: Volatility
         T_steps: Number of time steps
         dt: Time increment
-        episodes_per_node: Number of Thompson Sampling episodes per node
+        episodes_per_node: Number of Thompson Sampling episodes per node (auto-scales if None)
         prior_mean: Prior mean for binary positions
-        prior_std: Prior std for binary positions (wide prior = more exploration)
+        prior_std: Prior std for binary positions (auto-scales if None)
+        
+        AUTO-SCALING: Episodes and prior_std scale with T_steps for better performance
         """
         self.S0 = S0
         self.K = K
@@ -32,7 +34,40 @@ class ThompsonSamplingBackwardInduction:
         self.sigma = sigma
         self.T_steps = T_steps
         self.dt = dt
-        self.episodes_per_node = episodes_per_node
+        
+        # Binomial tree parameters
+        self.u = np.exp(sigma * np.sqrt(dt))
+        self.d = 1 / self.u
+        self.p = (np.exp(r * dt) - self.d) / (self.u - self.d)
+        
+        # Calculate max payoff for auto-scaling
+        max_stock_price = S0 * (self.u ** T_steps)
+        max_payoff = max(max_stock_price - K, 0)
+        
+        # AUTO-SCALE episodes: More complex problems need more episodes
+        # T=2: 5000, T=5: 15000
+        if episodes_per_node is None:
+            self.episodes_per_node = int(5000 * (1 + 0.5 * T_steps))
+        else:
+            self.episodes_per_node = episodes_per_node
+        
+        # AUTO-SCALE prior_std: Should be proportional to expected payoff range
+        # Wider std for larger payoffs to explore adequately
+        if prior_std is None:
+            self.prior_std = max(15.0, max_payoff / 3)  # At least 15, up to max_payoff/3
+        else:
+            self.prior_std = prior_std
+        
+        self.prior_mean = prior_mean
+        
+        print(f"\n{'='*60}")
+        print(f"THOMPSON SAMPLING AUTO-SCALING FOR T={T_steps}")
+        print(f"{'='*60}")
+        print(f"Max Stock Price: ${max_stock_price:.2f}")
+        print(f"Max Payoff: ${max_payoff:.2f}")
+        print(f"Episodes per Node: {self.episodes_per_node}")
+        print(f"Prior Std: {self.prior_std:.2f}")
+        print(f"{'='*60}\n")
         
         # Binomial tree parameters
         self.u = np.exp(sigma * np.sqrt(dt))
@@ -429,7 +464,7 @@ if __name__ == "__main__":
         K=100,
         r=0.05,
         sigma=0.2,
-        T_steps=2,  # Start with T=2, can scale to T=5
+        T_steps=4,  # Start with T=4
         dt=1.0,
         episodes_per_node=5000,  # More episodes for pure exploration
         prior_mean=0.0,  # No bias

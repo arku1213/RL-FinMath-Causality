@@ -13,9 +13,9 @@ class BranchingDQNBackwardInduction:
     """
     
     def __init__(self, S0=100, K=100, r=0.05, sigma=0.2, T_steps=2, dt=1.0,
-                 episodes_per_node=10000, learning_rate=0.001, epsilon_start=1.0,
-                 epsilon_end=0.01, epsilon_decay=0.995, batch_size=64,
-                 action_levels=11, action_range=50):
+                 episodes_per_node=None, learning_rate=None, epsilon_start=1.0,
+                 epsilon_end=0.01, epsilon_decay=None, batch_size=None,
+                 action_levels=None, action_range=None):
         """
         Parameters:
         -----------
@@ -25,14 +25,16 @@ class BranchingDQNBackwardInduction:
         sigma: Volatility
         T_steps: Number of time steps
         dt: Time increment
-        episodes_per_node: Training episodes per node
-        learning_rate: Learning rate for Q-network updates
+        episodes_per_node: Training episodes per node (auto-scales with T if None)
+        learning_rate: Learning rate (auto-scales with T if None)
         epsilon_start: Initial exploration rate
         epsilon_end: Final exploration rate
-        epsilon_decay: Epsilon decay rate
-        batch_size: Mini-batch size for experience replay
-        action_levels: Number of discrete levels per binary (e.g., 11)
-        action_range: Range of binary positions (e.g., [-50, 50])
+        epsilon_decay: Epsilon decay rate (auto-scales with T if None)
+        batch_size: Mini-batch size (auto-scales with T if None)
+        action_levels: Number of discrete levels per binary (auto-scales with T if None)
+        action_range: Range of binary positions (auto-scales with T if None)
+        
+        AUTO-SCALING: If parameters are None, they automatically adjust based on T_steps
         """
         self.S0 = S0
         self.K = K
@@ -40,16 +42,56 @@ class BranchingDQNBackwardInduction:
         self.sigma = sigma
         self.T_steps = T_steps
         self.dt = dt
-        self.episodes_per_node = episodes_per_node
-        self.alpha = learning_rate
+        
+        # Auto-scale parameters based on T_steps
+        self.u = np.exp(sigma * np.sqrt(dt))
+        self.d = 1 / self.u
+        
+        # Calculate max possible stock price to determine action range
+        max_stock_price = S0 * (self.u ** T_steps)
+        max_payoff = max(max_stock_price - K, 0)
+        
+        # AUTO-SCALING LOGIC
+        # Episodes: More time steps = need more episodes
+        self.episodes_per_node = episodes_per_node if episodes_per_node is not None else int(10000 * (1 + 0.3 * T_steps))
+        
+        # Learning rate: Lower for complex problems
+        self.alpha = learning_rate if learning_rate is not None else 0.001 / (1 + 0.1 * T_steps)
+        
+        # Epsilon decay: Slower for complex problems
+        self.epsilon_decay = epsilon_decay if epsilon_decay is not None else 0.995 ** (1 + 0.2 * T_steps)
+        
+        # Batch size: Larger for more data
+        self.batch_size = batch_size if batch_size is not None else min(128, int(64 * (1 + 0.2 * T_steps)))
+        
+        # Action range: Must cover max payoff + buffer
+        self.action_range = action_range if action_range is not None else int(max_payoff * 1.5 + 50)
+        
+        # Action levels: Finer discretization for larger ranges
+        if action_levels is not None:
+            self.action_levels = action_levels
+        else:
+            # Target: ~10 unit steps, so levels = 2*range/10 + 1
+            self.action_levels = max(11, int(2 * self.action_range / 10) + 1)
+            if self.action_levels % 2 == 0:  # Make odd for symmetry around 0
+                self.action_levels += 1
+        
         self.epsilon = epsilon_start
         self.epsilon_end = epsilon_end
-        self.epsilon_decay = epsilon_decay
-        self.batch_size = batch_size
         
-        # Action space discretization
-        self.action_levels = action_levels
-        self.action_range = action_range
+        # Print auto-scaled parameters
+        print(f"\n{'='*60}")
+        print(f"AUTO-SCALING FOR T={T_steps}")
+        print(f"{'='*60}")
+        print(f"Max Stock Price: ${max_stock_price:.2f}")
+        print(f"Max Payoff: ${max_payoff:.2f}")
+        print(f"Action Range: [{-self.action_range}, {self.action_range}]")
+        print(f"Action Levels: {self.action_levels} (step size ≈ {2*self.action_range/(self.action_levels-1):.1f})")
+        print(f"Episodes per Node: {self.episodes_per_node}")
+        print(f"Learning Rate: {self.alpha:.6f}")
+        print(f"Epsilon Decay: {self.epsilon_decay:.6f}")
+        print(f"Batch Size: {self.batch_size}")
+        print(f"{'='*60}\n")
         self.action_values = np.linspace(-action_range, action_range, action_levels)
         
         # Binomial tree parameters
@@ -471,7 +513,7 @@ if __name__ == "__main__":
         K=100,
         r=0.05,
         sigma=0.2,
-        T_steps=2,
+        T_steps=5,
         dt=1.0,
         episodes_per_node=10000,
         learning_rate=0.001,
