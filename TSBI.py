@@ -12,7 +12,7 @@ class ThompsonSamplingBackwardInduction:
     """
     
     def __init__(self, S0=100, K=100, r=0.05, sigma=0.2, T_steps=2, dt=1.0, 
-                 episodes_per_node=2000, prior_mean=0.0, prior_std=20.0):
+                 episodes_per_node=5000, prior_mean=0.0, prior_std=15.0):
         """
         Parameters:
         -----------
@@ -85,8 +85,6 @@ class ThompsonSamplingBackwardInduction:
     def _initialize_posteriors(self, prior_mean, prior_std):
         """Initialize Gaussian posteriors for each node"""
         for node_id in self.tree.keys():
-            # Number of binaries we can trade at this node
-            # (For now, one binary per future terminal state from this node)
             num_binaries = self._get_num_binaries(node_id)
             
             self.posteriors[node_id] = {
@@ -122,38 +120,96 @@ class ThompsonSamplingBackwardInduction:
     def _evaluate_hedge(self, node_id, binary_positions):
         """
         Evaluate quality of hedge at a node.
+        For backward induction: match value at child nodes, not terminal payoffs.
         
         Returns:
         --------
         cost: Cost of the hedge
         violation: Sum of squared constraint violations
         """
-        # Get terminal states from this node
-        terminal_prices = self._get_terminal_states_from_node(node_id)
-        target_payoffs = np.array([self._payoff_function(S) for S in terminal_prices])
+        node = self.tree[node_id]
+        t = node['time']
         
-        # Cost of binary positions (discounted)
-        t = self.tree[node_id]['time']
-        discount = np.exp(-self.r * (self.T_steps - t) * self.dt)
+        # If terminal node, match option payoff directly
+        if node['terminal']:
+            S = node['price']
+            target_payoff = self._payoff_function(S)
+            # For terminal node, we should have 1 binary that pays 1
+            replicated_payoff = binary_positions[0] if len(binary_positions) > 0 else 0
+            violation = (replicated_payoff - target_payoff) ** 2
+            
+            # Cost: discounted price of binary
+            discount = np.exp(-self.r * (self.T_steps - t) * self.dt)
+            cost = binary_positions[0] * discount if len(binary_positions) > 0 else 0
+            
+            return cost, violation
         
-        # Binary prices (risk-neutral pricing)
-        # Each binary pays 1 at its corresponding terminal state
-        steps_remaining = self.T_steps - t
-        binary_prices = []
-        for i in range(steps_remaining + 1):
-            # Probability of reaching this terminal state from current node
-            prob = (self.p ** (steps_remaining - i)) * ((1 - self.p) ** i)
-            binary_prices.append(discount * prob)
+        # For non-terminal nodes: match continuation values at child nodes
+        child_up_id = node['child_up']
+        child_down_id = node['child_down']
         
-        binary_prices = np.array(binary_prices)
-        cost = np.sum(binary_positions * binary_prices)
+        # Get continuation values from child nodes (if already computed)
+        # Otherwise use terminal payoffs
+        if child_up_id in self.optimal_hedges:
+            value_up = self._get_node_value(child_up_id)
+        else:
+            # Use terminal payoffs from this node
+            terminal_prices = self._get_terminal_states_from_node(node_id)
+            value_up = self._payoff_function(terminal_prices[0])
         
-        # Check if hedge replicates payoff
-        # Binary i pays 1 at terminal state i, 0 elsewhere
-        replicated_payoff = binary_positions
-        violation = np.sum((replicated_payoff - target_payoffs) ** 2)
+        if child_down_id in self.optimal_hedges:
+            value_down = self._get_node_value(child_down_id)
+        else:
+            terminal_prices = self._get_terminal_states_from_node(node_id)
+            value_down = self._payoff_function(terminal_prices[-1])
+        
+        target_values = np.array([value_up, value_down])
+        
+        # Binaries should replicate these values
+        # Assume: binary_positions[0] for up state, binary_positions[1] for down state
+        if len(binary_positions) == 2:
+            replicated_values = binary_positions[:2]
+        else:
+            # Handle case where we have more binaries (for terminal states)
+            terminal_prices = self._get_terminal_states_from_node(node_id)
+            num_terminal = len(terminal_prices)
+            
+            # Aggregate binary positions to up/down values
+            # Up path: first half of terminals, Down path: second half
+            mid = (num_terminal + 1) // 2
+            value_up_rep = np.sum(binary_positions[:mid])
+            value_down_rep = np.sum(binary_positions[mid:])
+            replicated_values = np.array([value_up_rep, value_down_rep])
+        
+        violation = np.sum((replicated_values - target_values) ** 2)
+        
+        # Cost: discounted risk-neutral price of binaries
+        discount = np.exp(-self.r * self.dt)
+        
+        # Binary prices using risk-neutral probabilities
+        binary_price_up = discount * self.p
+        binary_price_down = discount * (1 - self.p)
+        
+        if len(binary_positions) == 2:
+            cost = binary_positions[0] * binary_price_up + binary_positions[1] * binary_price_down
+        else:
+            # Price each terminal binary
+            steps_remaining = self.T_steps - t
+            terminal_prices = self._get_terminal_states_from_node(node_id)
+            binary_prices = []
+            for i in range(len(terminal_prices)):
+                prob = (self.p ** (steps_remaining - i)) * ((1 - self.p) ** i)
+                price = discount * prob
+                binary_prices.append(price)
+            cost = np.sum(binary_positions * np.array(binary_prices))
         
         return cost, violation
+    
+    def _get_node_value(self, node_id):
+        """Get the value at a node (sum of optimal hedge positions)"""
+        if node_id in self.optimal_hedges:
+            return np.sum(self.optimal_hedges[node_id])
+        return 0.0
     
     def _thompson_sampling_at_node(self, node_id):
         """
@@ -183,9 +239,12 @@ class ThompsonSamplingBackwardInduction:
             # Evaluate sampled hedge
             cost, violation = self._evaluate_hedge(node_id, sampled_hedge)
             
-            # Reward: minimize cost and violation
-            # Higher reward = better hedge
-            reward = -cost - 10000 * violation  # Much heavier penalty for violations
+            # Reward: heavily penalize violations, lightly penalize cost
+            # Make violation the PRIMARY objective
+            if violation < 0.01:  # Nearly perfect replication
+                reward = 100000 - cost  # Minimize cost among feasible solutions
+            else:
+                reward = -100000 * violation  # Focus purely on reducing violations
             
             # Track best
             if reward > best_reward:
@@ -372,9 +431,9 @@ if __name__ == "__main__":
         sigma=0.2,
         T_steps=2,  # Start with T=2, can scale to T=5
         dt=1.0,
-        episodes_per_node=2000,  # Increased for better convergence
-        prior_mean=0.0,
-        prior_std=20.0  # Wider prior for more exploration
+        episodes_per_node=5000,  # More episodes for pure exploration
+        prior_mean=0.0,  # No bias
+        prior_std=15.0  # Moderate exploration
     )
     
     # Run backward induction with Thompson Sampling
