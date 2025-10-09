@@ -450,7 +450,7 @@ if __name__ == "__main__":
         K=100,
         r=0.05,
         sigma=0.2,
-        T_steps=2,
+        T_steps=3,
         dt=1.0,
         episodes_per_node=10000,  # More episodes
         learning_rate=0.001,  # Lower learning rate for stability
