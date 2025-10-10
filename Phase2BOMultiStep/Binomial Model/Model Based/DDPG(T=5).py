@@ -49,15 +49,18 @@ COST_WEIGHT = 0.01  # Small weight on cost to prioritize constraint satisfaction
 max_stock_price = S0 * (u ** T_steps)
 max_terminal_payoff = max(max_stock_price - K, 0)
 
-# Continuation values can be larger than terminal payoffs (sum of discounted children)
-# Use a safety multiplier to ensure ACTION_SCALE is sufficient
-CONTINUATION_MULTIPLIER = 3.0  # Continuation values can be ~3x terminal payoff
+# Continuation multiplier scales with tree depth
+# Deeper trees have larger continuation values relative to terminal payoffs
+# T=2: 3.0×, T=3: 3.5×, T=4: 4.0×, T=5: 4.5×, etc.
+CONTINUATION_MULTIPLIER = 2.5 + (T_steps * 0.5)  # Scales linearly with T
+
 ACTION_SCALE = max(150.0, max_terminal_payoff * CONTINUATION_MULTIPLIER)
 
 print("="*60)
 print(f"IMPROVED PyTorch DDPG FOR T={T_steps} BINOMIAL")
 print("="*60)
 print(f"Max Terminal Payoff: ${max_terminal_payoff:.2f}")
+print(f"Continuation Multiplier: {CONTINUATION_MULTIPLIER:.1f}× (scales with T)")
 print(f"Action Scale (Dynamic): ±{ACTION_SCALE:.1f}")
 print(f"Penalty Weight: Adaptive (10-100 based on node type/payoff)")
 print(f"Cost Weight: {COST_WEIGHT}")
