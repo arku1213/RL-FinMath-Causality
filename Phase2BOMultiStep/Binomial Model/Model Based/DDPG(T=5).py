@@ -424,7 +424,7 @@ for t in range(T_steps, -1, -1):
         children = node_data['children']
         
         if len(children) == 0:
-            # Terminal node
+            # Terminal node - single binary that pays at this node
             target = node_data['payoff']
             n_binaries = 1
             prices = [np.exp(-r * dt)]
@@ -432,15 +432,12 @@ for t in range(T_steps, -1, -1):
             # Intermediate node - compute continuation value
             child_payoffs = [results[c]['cost'] + np.sum(results[c]['hedge']) for c in children]
             target = q * child_payoffs[0] + (1-q) * child_payoffs[1]
-            n_binaries = len(children) + (1 if t > 0 else 1)  # Children binaries + own time binary
             
-            # Prices: discount factor for each binary
-            if t == 0:
-                # Root has binaries for all future times
-                prices = [np.exp(-r * dt * (i+1)) for i in range(T_steps)]
-            else:
-                # Intermediate nodes have binaries for children + own time
-                prices = [np.exp(-r * dt) for _ in range(n_binaries)]
+            # Number of binaries = number of children (2 for binomial)
+            n_binaries = len(children)
+            
+            # Each binary has same discount factor (one time step)
+            prices = [np.exp(-r * dt) for _ in range(n_binaries)]
         
         hedge, cost, viol = train_node(node_id, n_binaries, target, prices, tree, EPISODES)
         results[node_id] = {'hedge': hedge, 'cost': cost, 'violation': viol}
