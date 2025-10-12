@@ -14,16 +14,16 @@ m = 1.0      # Middle state (stock stays same)
 d = 0.8187
 r = 0.05
 K = 100.0
-T_steps = 4  # ← CHANGE THIS: 2, 3, 4, 5, etc.
+T_steps = 5  # ← CHANGE THIS: 2, 3, 4, 5, etc.
 dt = 1.0
 
 # Super-replication mode
 SUPER_REPLICATION = True
-# Adaptive multiplier: scales down for deeper trees (harder optimization)
-SHORTFALL_MULTIPLIER = max(500, 2000 - T_steps * 300)  # T=2:1400, T=3:1100, T=4:800, T=5:500
+# REVERSED adaptive multiplier: INCREASES for deeper trees (need stronger enforcement)
+SHORTFALL_MULTIPLIER = 500 + T_steps * 200  # T=2:900, T=3:1100, T=4:1300, T=5:1500
 
 # DDPG Hyperparameters
-EPISODES = 10000
+EPISODES = 15000  # Increased from 10000 for better convergence on deep trees
 BATCH_SIZE = 64
 GAMMA = 0.99
 TAU = 0.005
@@ -62,11 +62,13 @@ print("="*60)
 print(f"TRINOMIAL DDPG SUPER-REPLICATION FOR T={T_steps}")
 print("="*60)
 print(f"Super-Replication: {SUPER_REPLICATION}")
-print(f"Shortfall Multiplier: {SHORTFALL_MULTIPLIER}× (ENHANCED)")
+print(f"Shortfall Multiplier: {SHORTFALL_MULTIPLIER}× (ADAPTIVE)")
+print(f"  Formula: max(500, 2000 - T×300)")
 print(f"Max Terminal Payoff: ${max_terminal_payoff:.2f}")
 print(f"Continuation Multiplier: {CONTINUATION_MULTIPLIER:.1f}×")
 print(f"Action Scale (Dynamic): ±{ACTION_SCALE:.1f}")
-print(f"Penalty: 100 (high), 75 (med >$15), 10 (low)")
+print(f"Base Episodes: {EPISODES}")
+print(f"Penalty: 100 (high >$50), 75 (med >$15), 10 (low)")
 print(f"States per Node: 3 (Up, Middle, Down)")
 print("="*60)
 
