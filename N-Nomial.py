@@ -16,11 +16,11 @@ dt = 1.0
 
 # N-nomial parameters
 N = 5  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
-T_steps = 3  # ← CHANGE THIS: Time steps
+T_steps = 5  # ← CHANGE THIS: Time steps
 
 # Super-replication mode
 SUPER_REPLICATION = True
-SHORTFALL_MULTIPLIER = 500 + T_steps * 200  # Increases with depth
+SHORTFALL_MULTIPLIER = 500 + T_steps * 250  # Increased scaling: was 200, now 250
 
 # DDPG Hyperparameters
 EPISODES = 15000 + (T_steps - 2) * 5000  # Scales with T
@@ -35,19 +35,19 @@ WARMUP_EPISODES = 500
 
 # Reward shaping
 def get_penalty_weight(node_id, tree):
-    """Adaptive penalty based on node type and payoff size"""
+    """Adaptive penalty based on node type and payoff size - strengthened for deep trees"""
     if len(tree[node_id]['children']) > 0:
-        return 100
+        return 150  # Intermediate nodes (was 100, now 150)
     else:
         payoff = tree[node_id]['payoff']
         if payoff > 150:
-            return 200
+            return 250  # Very high payoffs (was 200, now 250)
         elif payoff > 50:
-            return 100
+            return 150  # High payoffs (was 100, now 150)
         elif payoff > 15:
-            return 75
+            return 100  # Medium payoffs (was 75, now 100)
         else:
-            return 10
+            return 10   # Low/zero payoffs
 
 COST_WEIGHT = 0.01
 
@@ -110,7 +110,7 @@ def calculate_n_nomial_parameters(N, S0, r, dt):
     
     # Bounds: MIN_PROB <= p_i <= 1 - MIN_PROB*(N-1)
     # This ensures all states have positive probability!
-    MIN_PROB = 0.05  # At least 5% probability for each state
+    MIN_PROB = 0.03  # Reduced from 0.05 to 0.03 for N=5 flexibility
     max_prob = 1.0 - MIN_PROB * (N - 1)  # Leave room for other states
     bounds = [(MIN_PROB, max_prob) for _ in range(N)]
     

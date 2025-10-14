@@ -90,7 +90,18 @@ Day 17 - Tuesday, October 7th:
 - Trying to implement Dynamic Programming (Hybrid Approach)
 - Moving away from Deep RL - looking into ES
 
-Day 18 - Wednesday, October 8th:
+Day 18 - Wednesday, October 8th ->
+Day 22 - Tuesday, October 14th:
+
+- Implementing Dynamic Programming (Hybrid Approach) for Complete Super-Replication N-Nomial Market.
+  Tried:
+- Bayesian Optimization (did not work)
+- CMA-ES (worked until T=3)
+- DQN (worked until T=3)
+- Linear Optimization (worked until T=3)
+- PPO (worked until T=3)
+- Thompson Sampling (worked until T=3)
+- DDPG -> WORKED UP UNTIL N=5, T=4 in N-nomial case, just takes a while
 
 Next goals:
 
