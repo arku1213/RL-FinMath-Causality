@@ -15,16 +15,16 @@ r = 0.05
 dt = 1.0
 
 # N-nomial parameters
-N = 3  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
+N = 5  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
 T_steps = 2  # ← CHANGE THIS: Time steps
 
 # Super-replication mode
 SUPER_REPLICATION = True
-SHORTFALL_MULTIPLIER = 500 + T_steps * 250
+SHORTFALL_MULTIPLIER = 300 + T_steps * 150  # REDUCED from 500 + 250*T
 
 # UNIVERSAL AGENT Hyperparameters
-TOTAL_EPISODES = 100000  # Total training episodes across all iterations
-NUM_ITERATIONS = 5  # Number of iterative refinement cycles
+TOTAL_EPISODES = 150000  # INCREASED from 100k
+NUM_ITERATIONS = 6  # INCREASED from 5
 BATCH_SIZE = 128
 GAMMA = 0.99
 TAU = 0.005
@@ -114,11 +114,11 @@ def calculate_n_nomial_parameters(N, S0, r, dt):
 
 multipliers, probabilities = calculate_n_nomial_parameters(N, S0, r, dt)
 
-# Dynamic Action Space
+# FIX 1: INCREASED ACTION_SCALE with more aggressive multiplier
 max_stock_price = S0 * max(multipliers) ** T_steps
 max_terminal_payoff = max(max_stock_price - K, 0)
-CONTINUATION_MULTIPLIER = 3.0 + (T_steps * 0.7) + (N - 2) * 0.3
-ACTION_SCALE = max(150.0, max_terminal_payoff * CONTINUATION_MULTIPLIER)
+CONTINUATION_MULTIPLIER = 5.0 + (T_steps * 1.5) + (N - 2) * 1.0  # INCREASED
+ACTION_SCALE = max(300.0, max_terminal_payoff * CONTINUATION_MULTIPLIER)  # INCREASED base
 
 print("="*60)
 print(f"ITERATIVE UNIVERSAL AGENT: N={N}-NOMIAL, T={T_steps}")
@@ -127,6 +127,8 @@ print(f"Super-Replication: {SUPER_REPLICATION}")
 print(f"Total Training Episodes: {TOTAL_EPISODES}")
 print(f"Iterations: {NUM_ITERATIONS}")
 print(f"Episodes per Iteration: {TOTAL_EPISODES // NUM_ITERATIONS}")
+print(f"Shortfall Multiplier: {SHORTFALL_MULTIPLIER}")
+print(f"Continuation Multiplier: {CONTINUATION_MULTIPLIER:.1f}×")
 print(f"Action Scale (Dynamic): ±{ACTION_SCALE:.1f}")
 print(f"States per Node: {N}")
 print("="*60)
@@ -227,8 +229,9 @@ class UniversalActor(nn.Module):
         self.ln3 = nn.LayerNorm(hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, action_dim)
         
+        # FIX 5: Better initialization with slight positive bias
         nn.init.uniform_(self.fc4.weight, -0.003, 0.003)
-        nn.init.uniform_(self.fc4.bias, -0.003, 0.003)
+        nn.init.uniform_(self.fc4.bias, 0.0, 0.01)  # CHANGED: Positive bias
     
     def forward(self, state):
         x = torch.relu(self.ln1(self.fc1(state)))
@@ -397,7 +400,7 @@ def construct_state(node_id, target_payoff, tree):
     return state
 
 # ============================================================
-# REWARD FUNCTION
+# REWARD FUNCTION WITH FIXES
 # ============================================================
 def compute_reward(hedge, target_payoff, binary_prices, node_id, tree):
     hedge = np.atleast_1d(hedge)
@@ -423,6 +426,9 @@ def compute_reward(hedge, target_payoff, binary_prices, node_id, tree):
         violation = max(0, target_payoff - realized)
         normalized_violation = violation / max_payoff_global if max_payoff_global > 0 else violation
         reward = -(COST_WEIGHT * abs(cost) + penalty_weight * normalized_violation**2)
+    
+    # FIX 2: Clip reward to prevent explosion
+    reward = np.clip(reward, -10000, 0)
     
     violation = shortfall
     return reward, cost, violation
@@ -457,6 +463,10 @@ def solve_tree_with_agent(agent, tree, probabilities):
             state = construct_state(node_id, target, tree)
             action = agent.select_action(state, add_noise=False)
             hedge = action[:n_binaries]
+            
+            # FIX 3: Ensure terminal nodes have non-negative hedges
+            if len(children) == 0:
+                hedge = np.maximum(hedge, 0)
             
             _, cost, violation = compute_reward(hedge, target, prices, node_id, tree)
             
@@ -548,8 +558,9 @@ def train_universal_agent_iterative(tree, probabilities):
             add_noise = episode < episodes_this_iter * 0.8
             action = agent.select_action(state, add_noise=add_noise, noise_decay=noise_decay)
             
+            # FIX 3: Force non-negative hedges for terminals
             if is_terminal:
-                action_used = action[:1]
+                action_used = np.maximum(action[:1], 0)
                 prices_used = prices[:1]
             else:
                 action_used = action[:n_binaries]
