@@ -16,7 +16,7 @@ dt = 1.0
 
 # N-nomial parameters
 N = 5  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
-T_steps = 4  # ← CHANGE THIS: Time steps
+T_steps = 5  # ← CHANGE THIS: Time steps
 
 # Super-replication mode
 SUPER_REPLICATION = True
@@ -114,11 +114,20 @@ def calculate_n_nomial_parameters(N, S0, r, dt):
 
 multipliers, probabilities = calculate_n_nomial_parameters(N, S0, r, dt)
 
-# FIX 1: INCREASED ACTION_SCALE with more aggressive multiplier
+# ============================================================
+# FIX: EXPONENTIAL ACTION_SCALE FOR DEEP TREES (T >= 4)
+# ============================================================
 max_stock_price = S0 * max(multipliers) ** T_steps
 max_terminal_payoff = max(max_stock_price - K, 0)
-CONTINUATION_MULTIPLIER = 5.0 + (T_steps * 1.5) + (N - 2) * 1.0  # INCREASED
-ACTION_SCALE = max(300.0, max_terminal_payoff * CONTINUATION_MULTIPLIER)  # INCREASED base
+
+# NEW: Exponential scaling for T >= 4
+if T_steps <= 3:
+    CONTINUATION_MULTIPLIER = 5.0 + (T_steps * 1.5) + (N - 2) * 1.0
+else:
+    # More aggressive for deep trees
+    CONTINUATION_MULTIPLIER = 10.0 + (T_steps * 3.0) + (N - 2) * 2.0
+
+ACTION_SCALE = max(300.0, max_terminal_payoff * CONTINUATION_MULTIPLIER)
 
 print("="*60)
 print(f"ITERATIVE UNIVERSAL AGENT: N={N}-NOMIAL, T={T_steps}")
