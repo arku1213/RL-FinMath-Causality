@@ -24,7 +24,8 @@ SHORTFALL_MULTIPLIER = 300 + T_steps * 150  # REDUCED from 500 + 250*T
 
 # UNIVERSAL AGENT Hyperparameters
 TOTAL_EPISODES = 150000  # INCREASED from 100k
-NUM_ITERATIONS = 6  # INCREASED from 5
+# FIX 3: More iterations for deep trees (T >= 4)
+NUM_ITERATIONS = 8 if T_steps >= 4 else 6  # INCREASED from 6 for T>=4
 BATCH_SIZE = 128
 GAMMA = 0.99
 TAU = 0.005
@@ -120,7 +121,7 @@ multipliers, probabilities = calculate_n_nomial_parameters(N, S0, r, dt)
 max_stock_price = S0 * max(multipliers) ** T_steps
 max_terminal_payoff = max(max_stock_price - K, 0)
 
-# NEW: Exponential scaling for T >= 4
+# Exponential scaling for T >= 4
 if T_steps <= 3:
     CONTINUATION_MULTIPLIER = 5.0 + (T_steps * 1.5) + (N - 2) * 1.0
 else:
@@ -238,9 +239,8 @@ class UniversalActor(nn.Module):
         self.ln3 = nn.LayerNorm(hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, action_dim)
         
-        # FIX 5: Better initialization with slight positive bias
         nn.init.uniform_(self.fc4.weight, -0.003, 0.003)
-        nn.init.uniform_(self.fc4.bias, 0.0, 0.01)  # CHANGED: Positive bias
+        nn.init.uniform_(self.fc4.bias, 0.0, 0.01)
     
     def forward(self, state):
         x = torch.relu(self.ln1(self.fc1(state)))
@@ -541,7 +541,7 @@ def train_universal_agent_iterative(tree, probabilities):
         reward_history = []
         
         for episode in range(episodes_this_iter):
-            # Sample node
+            # FIX 1: Prioritized root node sampling after warmup
             if episode < warmup_episodes:
                 # Warmup: more terminals
                 if random.random() < 0.7:
@@ -549,7 +549,11 @@ def train_universal_agent_iterative(tree, probabilities):
                 else:
                     node_id = random.choice(non_terminal_nodes) if non_terminal_nodes else random.choice(terminal_nodes)
             else:
-                node_id = random.choice(all_nodes)
+                # After warmup: prioritize root node (node 0)
+                if random.random() < 0.3:  # 30% chance to sample root
+                    node_id = 0
+                else:
+                    node_id = random.choice(all_nodes)
             
             target_payoff = node_targets[node_id]
             
@@ -567,7 +571,7 @@ def train_universal_agent_iterative(tree, probabilities):
             add_noise = episode < episodes_this_iter * 0.8
             action = agent.select_action(state, add_noise=add_noise, noise_decay=noise_decay)
             
-            # FIX 3: Force non-negative hedges for terminals
+            # Force non-negative hedges for terminals
             if is_terminal:
                 action_used = np.maximum(action[:1], 0)
                 prices_used = prices[:1]
@@ -605,6 +609,7 @@ def train_universal_agent_iterative(tree, probabilities):
         
         print(f"\nIteration {iteration + 1} Results:")
         print(f"  Total Shortfall: {total_shortfall:.6f}")
+        print(f"  Root Node (0) Shortfall: {temp_results[0]['violation']:.6f}")
         print(f"  Initial Cost: ${initial_cost:.4f}")
         
         if total_shortfall < best_total_shortfall:
