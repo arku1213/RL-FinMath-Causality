@@ -105,4 +105,7 @@ Day 22 - Tuesday, October 14th:
 
 Next goals:
 
+- Least Squares Monte Carlo
+- Binaries for m scenarios fix
+
 - https://arxiv.org/pdf/2504.05521
