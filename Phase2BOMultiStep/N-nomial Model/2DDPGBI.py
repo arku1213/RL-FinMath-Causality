@@ -15,8 +15,8 @@ r = 0.05
 dt = 1.0
 
 # N-nomial parameters
-N = 5  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
-T_steps = 5  # ← CHANGE THIS: Time steps
+N = 2  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
+T_steps = 2  # ← CHANGE THIS: Time steps
 
 # Super-replication mode
 SUPER_REPLICATION = True

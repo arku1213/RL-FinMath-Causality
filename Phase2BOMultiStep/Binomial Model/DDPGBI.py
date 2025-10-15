@@ -13,7 +13,7 @@ u = 1.2214
 d = 0.8187
 r = 0.05
 K = 100.0
-T_steps = 5  # ← CHANGE THIS: 2, 3, 4, 5, etc.
+T_steps = 2  # ← CHANGE THIS: 2, 3, 4, 5, etc.
 dt = 1.0
 
 # DDPG Hyperparameters
