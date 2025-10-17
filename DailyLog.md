@@ -105,7 +105,8 @@ Day 22 - Tuesday, October 14th:
 
 Next goals:
 
-- Least Squares Monte Carlo
-- Binaries for m scenarios fix
+- Fix Complete Replication case - Trinomial & N-nomial
+- Document N-nomial code for Complete Super-Replication & Incomplete Case
+- Make sure that Incomplete Case code is doing as intended (Max number of binary options is less than number of scenarios)
 
 - https://arxiv.org/pdf/2504.05521

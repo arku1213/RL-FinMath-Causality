@@ -9,14 +9,13 @@ import random
 # CONFIGURATION
 # ============================================================
 S0 = 100.0
-dt = 1.0
-sigma = 0.2
-u = np.exp(sigma * np.sqrt(2 * dt))   # ≈ 1.3499
-m = 1.0                                
-d = np.exp(-sigma * np.sqrt(2 * dt))  # ≈ 0.7408
+u = 1.2214
+m = 1.0
+d = 0.8187
 r = 0.05
 K = 100.0
 T_steps = 2
+dt = 1.0
 
 # LSMC Parameters
 NUM_SIMULATIONS = 10000
@@ -24,40 +23,36 @@ POLYNOMIAL_DEGREE = 3
 REGRESSION_ALPHA = 0.1
 
 # ============================================================
-# AGGRESSIVE HYPERPARAMETERS FOR COMPLETE MARKET
+# AGGRESSIVE HYPERPARAMETERS FOR COMPLETE MARKET REPLICATION
 # ============================================================
-ACTOR_LR = 0.0001      # Increased from 0.00005
-CRITIC_LR = 0.0003     # Increased from 0.00015
+ACTOR_LR = 0.0001
+CRITIC_LR = 0.0003
 
 max_stock_price = S0 * (u ** T_steps)
 max_terminal_payoff = max(max_stock_price - K, 0)
-ACTION_SCALE = max_terminal_payoff * 3.0  # Increased from 2.0 to allow larger hedges
+ACTION_SCALE = max_terminal_payoff * 3.0
 
 # CRITICAL: Make accuracy MUCH more important than cost
-REPLICATION_PENALTY = 10000  # Increased from 800 - THIS IS KEY!
-EXTREME_PENALTY_WEIGHT = 100  # Increased from 30
-COST_WEIGHT = 0.0001          # Decreased from 0.01 - cost barely matters!
+REPLICATION_PENALTY = 10000  # Very high - must match exactly
+EXTREME_PENALTY_WEIGHT = 100
+COST_WEIGHT = 0.0001         # Very low - cost barely matters
 
-# More training
-TOTAL_EPISODES = 300000  # Increased from 240000
-NUM_ITERATIONS = 12      # Increased from 10
+# Training schedule
+TOTAL_EPISODES = 300000
+NUM_ITERATIONS = 12
 BATCH_SIZE = 256
 GAMMA = 0.99
 TAU = 0.005
-BUFFER_SIZE = 300000  # Increased
-HIDDEN_DIM = 256      # Increased from 128 for more capacity
+BUFFER_SIZE = 300000
+HIDDEN_DIM = 256
 
 print("="*60)
-print(f"LSMC + DDPG: TRINOMIAL T={T_steps}")
-print(f"MODE: COMPLETE MARKET - AGGRESSIVE ACCURACY PRIORITY")
+print(f"COMPLETE MARKET REPLICATION: TRINOMIAL T={T_steps}")
 print("="*60)
-print("CRITICAL CHANGES:")
-print(f"  → Replication Penalty: {REPLICATION_PENALTY} (VERY HIGH)")
-print(f"  → Cost Weight: {COST_WEIGHT} (VERY LOW)")
-print(f"  → Accuracy/Cost Ratio: {REPLICATION_PENALTY/COST_WEIGHT:,.0f}:1")
-print(f"  → Extreme Penalty: {EXTREME_PENALTY_WEIGHT}")
-print(f"  → Action Scale: ±{ACTION_SCALE:.1f}")
-print(f"  → Hidden Dim: {HIDDEN_DIM}, Episodes: {TOTAL_EPISODES:,}")
+print("GOAL: PERFECT REPLICATION (exact matching)")
+print(f"Replication Penalty: {REPLICATION_PENALTY}")
+print(f"Cost Weight: {COST_WEIGHT}")
+print(f"Accuracy/Cost Ratio: {REPLICATION_PENALTY/COST_WEIGHT:,.0f}:1")
 print("="*60)
 
 # ============================================================
@@ -143,13 +138,13 @@ class TrinomialPathSimulator:
                     rand = np.random.random()
                     if rand < self.p_u:
                         S *= self.u
-                        path_step['child_occurred'] = 0
+                        path_step['child_occurred'] = 0  # Up
                     elif rand < self.p_u + self.p_m:
                         S *= self.m
-                        path_step['child_occurred'] = 1
+                        path_step['child_occurred'] = 1  # Mid
                     else:
                         S *= self.d
-                        path_step['child_occurred'] = 2
+                        path_step['child_occurred'] = 2  # Down
                 
                 path.append(path_step)
             paths.append(path)
@@ -201,17 +196,16 @@ class LSMCEstimator:
             return [self.predict_continuation_value(S * move, t + 1) for move in [u, m, d]]
 
 # ============================================================
-# ENHANCED DDPG AGENT WITH LARGER NETWORKS
+# DDPG AGENT
 # ============================================================
 class UniversalActor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim):
         super(UniversalActor, self).__init__()
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim)  # Extra layer
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, action_dim)
         
-        # Better initialization
         nn.init.xavier_uniform_(self.fc1.weight)
         nn.init.xavier_uniform_(self.fc2.weight)
         nn.init.xavier_uniform_(self.fc3.weight)
@@ -229,7 +223,7 @@ class UniversalCritic(nn.Module):
         super(UniversalCritic, self).__init__()
         self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, hidden_dim)  # Extra layer
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, 1)
         
         nn.init.xavier_uniform_(self.fc1.weight)
@@ -246,7 +240,7 @@ class UniversalCritic(nn.Module):
         return x
 
 class OUNoise:
-    def __init__(self, action_dim, mu=0, theta=0.15, sigma=0.3):  # Increased sigma
+    def __init__(self, action_dim, mu=0, theta=0.15, sigma=0.3):
         self.action_dim, self.mu, self.theta, self.sigma = action_dim, mu, theta, sigma
         self.reset()
     
@@ -335,7 +329,7 @@ class UniversalDDPGAgent:
             target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
 
 # ============================================================
-# STATE & REWARD - AGGRESSIVE ACCURACY FOCUS
+# STATE & REWARD - REPLICATION
 # ============================================================
 def construct_state(S, t, target_values):
     is_intermediate = isinstance(target_values, (list, np.ndarray))
@@ -355,7 +349,7 @@ def construct_state(S, t, target_values):
 
 def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occurred=None):
     """
-    AGGRESSIVE: Accuracy is 100,000x more important than cost!
+    REPLICATION REWARD: Match exactly (symmetric penalty)
     """
     hedge = np.atleast_1d(hedge)
     cost = np.sum(hedge * binary_prices)
@@ -363,14 +357,9 @@ def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occur
     if is_terminal:
         deviation = abs(hedge[0] - target_values)
         extreme_penalty = 0
-        
-        # Extra penalty for high-value terminals
-        if target_values > 40:
-            penalty_multiplier = 2.0
-        else:
-            penalty_multiplier = 1.0
+        penalty_multiplier = 1.0
     else:
-        # CRITICAL: Use child_occurred if available
+        # CRITICAL: Use child_occurred if available (for training)
         if child_occurred is not None:
             # Only the binary that pays off matters!
             deviation = abs(hedge[child_occurred] - target_values[child_occurred])
@@ -384,7 +373,7 @@ def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occur
         # Extreme position penalty
         all_targets_near_zero = all(abs(tv) < 0.1 for tv in target_values)
         if all_targets_near_zero:
-            max_reasonable = 2.0  # Very strict for zero targets
+            max_reasonable = 2.0
         else:
             max_reasonable = max([abs(tv) * 3.0 for tv in target_values] + [10.0])
         
@@ -392,7 +381,7 @@ def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occur
     
     normalized_deviation = deviation / (max_terminal_payoff if max_terminal_payoff > 0 else 1.0)
     
-    # CRITICAL: Make accuracy overwhelmingly important
+    # REPLICATION: symmetric penalty on deviation
     reward = -(COST_WEIGHT * abs(cost) 
                + penalty_multiplier * REPLICATION_PENALTY * normalized_deviation**2
                + EXTREME_PENALTY_WEIGHT * extreme_penalty)
@@ -400,7 +389,7 @@ def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occur
     return np.clip(reward, -100000, 0), cost, deviation
 
 # ============================================================
-# TRAINING LOOP
+# TRAINING LOOP WITH MULTI-CHILD TRAINING (FIX 3)
 # ============================================================
 def train_universal_agent_with_lsmc():
     simulator = TrinomialPathSimulator(S0, u, m, d, p_u, p_m, p_d, T_steps, dt)
@@ -408,9 +397,6 @@ def train_universal_agent_with_lsmc():
     agent = UniversalDDPGAgent(state_dim=6, action_dim=3, hidden_dim=HIDDEN_DIM)
     
     best_avg_deviation = float('inf')
-    # Prepare default node_results / successes in case we exit early
-    final_node_results = []
-    final_successes = 0
     
     for iteration in range(NUM_ITERATIONS):
         print(f"\n{'='*60}\nITERATION {iteration + 1}/{NUM_ITERATIONS}\n{'='*60}")
@@ -418,7 +404,7 @@ def train_universal_agent_with_lsmc():
         paths = simulator.simulate_paths(NUM_SIMULATIONS)
         paths = lsmc_estimator.estimate_continuation_values(paths, r, dt)
         
-        print(f"\nTraining agent with AGGRESSIVE accuracy focus...")
+        print(f"\nTraining agent with MULTI-CHILD training...")
         episodes_this_iter = TOTAL_EPISODES // NUM_ITERATIONS
         
         reward_history = []
@@ -442,36 +428,35 @@ def train_universal_agent_with_lsmc():
             
             state = construct_state(S, t, target)
             
-            # More aggressive noise schedule
             noise_decay = max(0.05, 1.0 - episode / episodes_this_iter)
-            add_noise = episode < episodes_this_iter * 0.9  # Explore longer
+            add_noise = episode < episodes_this_iter * 0.9
             action = agent.select_action(state, add_noise=add_noise, noise_decay=noise_decay)
             
             action_used = action[:1] if is_terminal else action[:3]
             
-            reward, _, _ = compute_reward(action_used, target, prices, is_terminal, child_occurred)
-            reward_history.append(reward)
-            
-            agent.replay_buffer.push(state, action, reward, state, False)
+            # MULTI-CHILD TRAINING (FIX 3)
+            if is_terminal:
+                reward, _, _ = compute_reward(action_used, target, prices, is_terminal, None)
+                agent.replay_buffer.push(state, action, reward, state, False)
+                reward_history.append(reward)
+            else:
+                # Push 3 training examples (one per child)
+                for child_idx in range(3):
+                    reward, _, _ = compute_reward(action_used, target, prices, False, child_idx)
+                    agent.replay_buffer.push(state, action, reward, state, False)
+                    reward_history.append(reward)
             
             if len(agent.replay_buffer) >= BATCH_SIZE:
                 agent.update(BATCH_SIZE)
             
-            # More frequent updates
             if (episode + 1) % (episodes_this_iter // 8) == 0:
                 avg_reward = np.mean(reward_history[-1000:]) if len(reward_history) >= 1000 else np.mean(reward_history)
                 print(f"  Episode {episode+1}/{episodes_this_iter}: Avg Reward={avg_reward:.1f}")
 
-        print(f"\nEvaluating on paths with child tracking...")
+        print(f"\nEvaluating on paths...")
         
         total_deviation, num_evals = 0, 0
-        max_deviation = 0
-        deviation_by_type = {'terminal': [], 'intermediate': []}
-
-        # Initialize tracking variables BEFORE the loop
-        node_results = []
-        successes = 0
-
+        
         for path in paths[:1000]:
             for node in path:
                 S_eval, t_eval = node['S'], node['t']
@@ -491,154 +476,120 @@ def train_universal_agent_with_lsmc():
                 action_used_eval = action_eval[:1] if is_terminal_eval else action_eval[:3]
                 
                 _, _, deviation = compute_reward(action_used_eval, target_eval, prices_eval, is_terminal_eval, child_eval)
-
-                # Build node-level record
-                node_result = {
-                    "t": t_eval,
-                    "S": S_eval,
-                    "hedges": action_used_eval.tolist(),
-                    "targets": np.atleast_1d(target_eval).tolist(),
-                    "deviations": (
-                        [float(deviation)]
-                        if not isinstance(target_eval, (list, np.ndarray))
-                        else np.abs(np.array(action_used_eval) - np.array(target_eval)).tolist()
-                    ),
-                    "avg_dev": float(np.mean(np.abs(np.array(action_used_eval) - np.array(target_eval)))),
-                    "cost": float(np.sum(np.array(action_used_eval) * np.array(prices_eval))),
-                }
-
-                node_results.append(node_result)
-                if node_result["avg_dev"] < 1.0:
-                    successes += 1
-
-                total_deviation += deviation
-                max_deviation = max(max_deviation, deviation)
-                num_evals += 1
                 
-                if is_terminal_eval:
-                    deviation_by_type['terminal'].append(deviation)
-                else:
-                    deviation_by_type['intermediate'].append(deviation)
+                total_deviation += deviation
+                num_evals += 1
 
-        # After the loop
         avg_deviation = total_deviation / num_evals
-        avg_terminal = np.mean(deviation_by_type['terminal']) if deviation_by_type['terminal'] else 0
-        avg_intermediate = np.mean(deviation_by_type['intermediate']) if deviation_by_type['intermediate'] else 0
-
         print(f"\nIteration {iteration + 1} Results:")
-        print(f"  Overall Avg Deviation: {avg_deviation:.6f}")
-        print(f"  Terminal Avg Deviation: {avg_terminal:.6f}")
-        print(f"  Intermediate Avg Deviation: {avg_intermediate:.6f}")
-        print(f"  Max Deviation: {max_deviation:.6f}")
-
+        print(f"  Average Deviation: {avg_deviation:.6f}")
         
         if avg_deviation < best_avg_deviation:
             best_avg_deviation = avg_deviation
             print(f"  ✓ NEW BEST!")
         
-        # Save final evaluation results (overwrite each iteration; final iteration stays)
-        final_node_results = node_results
-        final_successes = successes
-        
-        if avg_deviation < 0.5:
-            print(f"\n🎉 SUCCESS! Avg Deviation < 0.5 at iteration {iteration + 1}")
+        if avg_deviation < 1.0:
+            print(f"\n🎉 SUCCESS! Avg Deviation < 1.0 at iteration {iteration + 1}")
             break
             
     print(f"\n{'='*60}\nTRAINING COMPLETE!\n{'='*60}")
     print(f"Best Average Deviation: {best_avg_deviation:.6f}")
-    print(f"Target was: < 1.0 for success")
-    # return agent, lsmc_estimator, plus evaluation artifacts for final report
-    return agent, lsmc_estimator, final_node_results, final_successes
+    print(f"Target: < 1.0 for success")
+    return agent, lsmc_estimator
 
 # ============================================================
 # MAIN EXECUTION
 # ============================================================
-agent, lsmc_estimator, node_results, successes = train_universal_agent_with_lsmc()
+agent, lsmc_estimator = train_universal_agent_with_lsmc()
 
 # ============================================================
-# FINAL EVALUATION
+# FINAL EVALUATION - UNIQUE STATES ONLY (FIX 1)
 # ============================================================
-# ============================================================
-# FINAL EVALUATION — STRUCTURED HEDGE REPORT (TRINOMIAL)
-# ============================================================
+print("\n" + "="*60 + "\nFINAL EVALUATION - REPLICATION\n" + "="*60)
 
-print("\n" + "=" * 60)
-print("HEDGE STRUCTURE — TRINOMIAL MODEL")
-print("=" * 60)
-print(f"Goal: Determine how many binary/trinomial contracts to hold at each node")
-print(f"Mode: REPLICATION ANALYSIS")
-print("=" * 60)
+# Collect unique (S, t) pairs from the tree
+simulator = TrinomialPathSimulator(S0, u, m, d, p_u, p_m, p_d, T_steps, dt)
+paths = simulator.simulate_paths(1000)
 
-for node in node_results:
-    S, t = node["S"], node["t"]
-    hedges = node.get("hedges", [])
-    targets = node.get("targets", [])
-    devs = node.get("deviations", [])
-    avg_dev = node.get("avg_dev", 0.0)
-    cost = node.get("cost", 0.0)
+unique_states = set()
+for path in paths:
+    for node in path:
+        unique_states.add((node['S'], node['t']))
 
-    print(f"\nt = {t} | S = {S:.2f}")
-    print("-" * 60)
+# Sort by time then by price (descending)
+unique_states = sorted(list(unique_states), key=lambda x: (x[1], -x[0]))
 
-    # Continuation targets
-    if len(targets) == 3:
-        print("Continuation targets:")
-        print(f"  Up   : ${targets[0]:.4f}")
-        print(f"  Mid  : ${targets[1]:.4f}")
-        print(f"  Down : ${targets[2]:.4f}")
-    elif len(targets) == 2:
-        print("Continuation targets:")
-        print(f"  Up   : ${targets[0]:.4f}")
-        print(f"  Down : ${targets[1]:.4f}")
+print(f"\nEvaluating {len(unique_states)} unique states in trinomial tree")
+print("="*60)
+
+success_count = 0
+total_tests = len(unique_states)
+
+for S, t in unique_states:
+    is_terminal = (t == T_steps)
+    
+    if is_terminal:
+        target = max(S - K, 0)
+        prices = [np.exp(-r * dt)]
     else:
-        print(f"Terminal target: ${targets[0]:.4f}")
-
-    print("-" * 60)
-
-    # Hedge vector
-    if len(hedges) == 3:
-        print("Binary holdings (hedge composition):")
-        print(f"  Up   : {hedges[0]:+,.4f}")
-        print(f"  Mid  : {hedges[1]:+,.4f}")
-        print(f"  Down : {hedges[2]:+,.4f}")
-    elif len(hedges) == 2:
-        print("Binary holdings (hedge composition):")
-        print(f"  Up   : {hedges[0]:+,.4f}")
-        print(f"  Down : {hedges[1]:+,.4f}")
+        target = lsmc_estimator.predict_child_continuation_values(S, t)
+        prices = [np.exp(-r * dt) * p for p in [p_u, p_m, p_d]]
+    
+    state = construct_state(S, t, target)
+    action = agent.select_action(state, add_noise=False)
+    action_used = action[:1] if is_terminal else action[:3]
+    
+    _, cost, deviation = compute_reward(action_used, target, prices, is_terminal, child_occurred=None)
+    
+    is_success = deviation < 1.0
+    if is_success:
+        success_count += 1
+    
+    # Print results
+    print(f"\nt={t} | S=${S:.2f}")
+    print("-"*60)
+    
+    if is_terminal:
+        print(f"Terminal target: ${target:.4f}")
+        print(f"Terminal binary holding: {action_used[0]:+.4f}")
+        print(f"Total hedge cost: ${cost:+.4f}")
+        print(f"Deviation: {deviation:.4f} {'✓' if is_success else '✗'}")
     else:
-        print("Terminal binary holding:")
-        print(f"  {hedges[0]:+,.4f}")
-
-    print("-" * 60)
-    print(f"Total hedge cost   : {cost:+.4f}")
-
-    # Deviations
-    if len(devs) == 3:
+        print(f"Continuation targets:")
+        print(f"  Up   : ${target[0]:.4f}")
+        print(f"  Mid  : ${target[1]:.4f}")
+        print(f"  Down : ${target[2]:.4f}")
+        print("-"*60)
+        print(f"Binary holdings (hedge composition):")
+        print(f"  Up   : {action_used[0]:+.4f}")
+        print(f"  Mid  : {action_used[1]:+.4f}")
+        print(f"  Down : {action_used[2]:+.4f}")
+        print("-"*60)
+        print(f"Total hedge cost: ${cost:+.4f}")
+        
+        dev_up = abs(action_used[0] - target[0])
+        dev_mid = abs(action_used[1] - target[1])
+        dev_down = abs(action_used[2] - target[2])
+        
         print(f"Individual deviations:")
-        print(f"  Up   : {devs[0]:.4f}")
-        print(f"  Mid  : {devs[1]:.4f}")
-        print(f"  Down : {devs[2]:.4f}")
-    elif len(devs) == 2:
-        print(f"Individual deviations:")
-        print(f"  Up   : {devs[0]:.4f}")
-        print(f"  Down : {devs[1]:.4f}")
+        print(f"  Up   : {dev_up:.4f}")
+        print(f"  Mid  : {dev_mid:.4f}")
+        print(f"  Down : {dev_down:.4f}")
+        print(f"Average deviation: {deviation:.6f} {'✓' if is_success else '✗'}")
+    
+    print("-"*60)
+    if is_success:
+        print("Interpretation: ✓ Good replication")
     else:
-        print(f"Deviation: {devs[0]:.4f}")
+        print("Interpretation: ✗ Poor replication")
+    print("="*60)
 
-    print(f"Average deviation   : {avg_dev:.6f} {'✓' if avg_dev < 1.0 else '✗'}")
-    print("-" * 60)
-
-    # Interpretation
-    if avg_dev < 0.1:
-        meaning = "→ Perfect replication (binary weights match targets)"
-    elif avg_dev < 1.0:
-        meaning = "→ Near-replication"
-    else:
-        meaning = "→ Poor replication — hedge not aligned with continuation"
-    print(f"Interpretation:\n  {meaning}")
-    print("=" * 60)
-
-# Summary
-print("\n" + "=" * 60)
-print(f"SUCCESS RATE: {successes}/{len(node_results)} ({successes/len(node_results)*100:.1f}%)")
-print("=" * 60)
+print("\n" + "="*60)
+print(f"SUCCESS RATE: {success_count}/{total_tests} ({100*success_count/total_tests:.1f}%)")
+print("="*60)
+print("\nCOMPLETE MARKET REPLICATION SUMMARY:")
+print(f"• 3 states, 3 binaries → COMPLETE")
+print(f"• Multi-child training: 3× data per sample")
+print(f"• Replication penalty: {REPLICATION_PENALTY}")
+print(f"• Target: < 1.0 deviation for success")
+print("="*60)
