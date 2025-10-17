@@ -36,10 +36,9 @@ max_stock_price = S0 * (np.exp(sigma * np.sqrt(2 * dt)) ** T_steps)
 max_terminal_payoff = max(max_stock_price - K, 0)
 ACTION_SCALE = max_terminal_payoff * 3.0
 
-# ASYMMETRIC PENALTIES FOR SUPER-REPLICATION
-SHORTFALL_PENALTY = 10000
-EXCESS_PENALTY = 10     # INCREASED: penalize over-hedging more
-COST_WEIGHT = 0.1       # INCREASED: care more about cost
+SHORTFALL_PENALTY = 10000 * N    # Scale with number of states!
+EXCESS_PENALTY = 10              # Keep this fixed
+COST_WEIGHT = 0.1 / N            # Reduce cost importance for larger N
 
 # Training schedule
 TOTAL_EPISODES = 300000
