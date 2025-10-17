@@ -37,9 +37,9 @@ max_terminal_payoff = max(max_stock_price - K, 0)
 ACTION_SCALE = max_terminal_payoff * 3.0
 
 # ASYMMETRIC PENALTIES FOR SUPER-REPLICATION
-SHORTFALL_PENALTY = 10000   # HUGE - must never underpay!
-EXCESS_PENALTY = 1          # SMALL - overpayment is acceptable
-COST_WEIGHT = 0.01          # MEDIUM - still want cost efficiency
+SHORTFALL_PENALTY = 10000
+EXCESS_PENALTY = 10     # INCREASED: penalize over-hedging more
+COST_WEIGHT = 0.1       # INCREASED: care more about cost
 
 # Training schedule
 TOTAL_EPISODES = 300000

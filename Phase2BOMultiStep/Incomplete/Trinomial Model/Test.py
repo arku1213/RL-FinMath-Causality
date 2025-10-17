@@ -38,8 +38,8 @@ ACTION_SCALE = max_terminal_payoff * 3.0
 
 # ASYMMETRIC PENALTIES FOR SUPER-REPLICATION
 SHORTFALL_PENALTY = 10000   # HUGE - must never underpay!
-EXCESS_PENALTY = 1          # SMALL - overpayment is acceptable
-COST_WEIGHT = 0.01          # MEDIUM - still want cost efficiency
+EXCESS_PENALTY = 10         # INCREASED from 1 → penalize over-hedging more
+COST_WEIGHT = 0.1           # INCREASED from 0.01 → care more about cost
 
 # Training schedule
 TOTAL_EPISODES = 300000
