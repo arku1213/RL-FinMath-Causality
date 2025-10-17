@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import random
+import math
 from scipy.optimize import linprog
 
 # ============================================================
@@ -587,44 +588,79 @@ def train_universal_agent_with_lsmc():
 agent, lsmc_estimator = train_universal_agent_with_lsmc()
 
 # ============================================================
-# FINAL EVALUATION
+# TRAINING COMPLETE — CONSISTENT REPORT FORMAT
 # ============================================================
-print("\n" + "="*60 + "\nFINAL EVALUATION\n" + "="*60)
-
-# Sample some key states for evaluation
-print("\nSampling key states for evaluation...")
-print("-" * 100)
-
-# Evaluate root
-S, t = S0, 0
-target = lsmc_estimator.predict_child_continuation_values(S, t)
-prices = [np.exp(-r * dt) * p for p in probabilities]
-state = construct_state(S, t, target)
-action = agent.select_action(state, add_noise=False)
-_, cost, deviation = compute_reward(action[:N], target, prices, False, child_occurred=None)
-
-print(f"\nRoot State: S=${S:.2f}, t={t}")
-print(f"  Targets: {[f'${v:.2f}' for v in target]}")
-print(f"  Hedges: {[f'{h:.2f}' for h in action[:N]]}")
-print(f"  Cost: ${cost:.2f}, Avg Deviation: {deviation:.4f} {'✓' if deviation < 1.0 else '✗'}")
-
-# Evaluate a few terminals
-print(f"\nTerminal States (t={T_steps}):")
-for i in [0, N//2, N-1]:
-    S_term = S0 * (multipliers[i] ** T_steps)
-    target_term = max(S_term - K, 0)
-    prices_term = [np.exp(-r * dt)]
-    state_term = construct_state(S_term, T_steps, target_term)
-    action_term = agent.select_action(state_term, add_noise=False)
-    _, cost_term, dev_term = compute_reward(action_term[:1], target_term, prices_term, True, None)
-    
-    print(f"  S=${S_term:.2f}: Target=${target_term:.2f}, Hedge=${action_term[0]:.2f}, Dev={dev_term:.4f} {'✓' if dev_term < 1.0 else '✗'}")
 
 print("\n" + "="*60)
-print(f"{N}-NOMIAL COMPLETE MARKET - REPLICATION MODE")
+print("TRAINING COMPLETE!")
 print("="*60)
-print(f"• {N} states per node → {N} binaries (COMPLETE)")
-print(f"• Goal: PERFECT REPLICATION (minimize deviation)")
-print(f"• Each binary matches its continuation value")
-print("• Change N at top to test different N-nomial models!")
+print("Target was: < 1.0 for success\n")
+
+# ============================================================
+# FINAL EVALUATION — Unified Hedge Report
+# ============================================================
+
+print("FINAL EVALUATION")
 print("="*60)
+
+# pick representative evaluation states (you can change)
+eval_states = [100.0, 120.0, 80.0]  # sample underlying prices
+successes, total_nodes = 0, 0
+
+for S_eval in eval_states:
+    for t_eval in range(T_steps + 1):
+        # --- Get LSMC target continuation values ---
+        try:
+            target_values = lsmc_estimator.predict_child_continuation_values(S_eval, t_eval)
+        except Exception:
+            # terminal node → direct payoff
+            target_values = [max(S_eval - K, 0.0)]
+
+        target_values = np.atleast_1d(target_values)
+
+        # --- Agent hedge decision ---
+        state_input = construct_state(S_eval, t_eval, target_values)
+        hedge = agent.select_action(state_input, add_noise=False)
+        hedge = np.atleast_1d(hedge)
+
+        # --- Price each binary (risk-neutral) ---
+        if hedge.shape[0] == 1:
+            binary_prices = [np.exp(-r * dt)]
+        else:
+            # Prefer using the globally computed `probabilities` if its length matches or exceeds the action dim;
+            # otherwise fall back to uniform probabilities.
+            try:
+                if len(probabilities) >= hedge.shape[0]:
+                    p_list = probabilities[:hedge.shape[0]].tolist()
+                else:
+                    p_list = [1.0 / hedge.shape[0]] * hedge.shape[0]
+            except NameError:
+                # If `probabilities` is somehow not defined, use uniform probabilities.
+                p_list = [1.0 / hedge.shape[0]] * hedge.shape[0]
+            binary_prices = [np.exp(-r * dt) * float(p) for p in p_list]
+
+        # --- Compute hedge cost & deviations ---
+        cost = float(np.sum(np.array(hedge) * np.array(binary_prices)))
+        deviations = np.abs(np.array(hedge) - np.array(target_values))
+        avg_dev = float(np.mean(deviations))
+
+        # --- Print structured result ---
+        print(f"\nState: S=${S_eval:.2f}, t={t_eval}")
+        print(f"  Targets: {[round(v, 4) for v in target_values]}")
+        print(f"  Hedges:  {[round(h, 4) for h in hedge]}")
+        print(f"  Binary Prices: {[round(b, 6) for b in binary_prices]}")
+        print(f"  Cost: ${cost:.4f}")
+        print(f"  Individual Devs: {[round(d, 4) for d in deviations]}")
+        print(f"  Average Deviation: {avg_dev:.6f} {'✓' if avg_dev < 1.0 else '✗'}")
+
+        total_nodes += 1
+        if avg_dev < 1.0:
+            successes += 1
+
+# ============================================================
+# SUMMARY
+# ============================================================
+success_rate = (successes / total_nodes * 100) if total_nodes > 0 else 0
+print("\n" + "="*60)
+print(f"SUCCESS RATE: {successes}/{total_nodes} ({success_rate:.1f}%)")
+print("="*60 + "\n")
