@@ -408,6 +408,9 @@ def train_universal_agent_with_lsmc():
     agent = UniversalDDPGAgent(state_dim=6, action_dim=3, hidden_dim=HIDDEN_DIM)
     
     best_avg_deviation = float('inf')
+    # Prepare default node_results / successes in case we exit early
+    final_node_results = []
+    final_successes = 0
     
     for iteration in range(NUM_ITERATIONS):
         print(f"\n{'='*60}\nITERATION {iteration + 1}/{NUM_ITERATIONS}\n{'='*60}")
@@ -464,7 +467,11 @@ def train_universal_agent_with_lsmc():
         total_deviation, num_evals = 0, 0
         max_deviation = 0
         deviation_by_type = {'terminal': [], 'intermediate': []}
-        
+
+        # Initialize tracking variables BEFORE the loop
+        node_results = []
+        successes = 0
+
         for path in paths[:1000]:
             for node in path:
                 S_eval, t_eval = node['S'], node['t']
@@ -484,7 +491,26 @@ def train_universal_agent_with_lsmc():
                 action_used_eval = action_eval[:1] if is_terminal_eval else action_eval[:3]
                 
                 _, _, deviation = compute_reward(action_used_eval, target_eval, prices_eval, is_terminal_eval, child_eval)
-                
+
+                # Build node-level record
+                node_result = {
+                    "t": t_eval,
+                    "S": S_eval,
+                    "hedges": action_used_eval.tolist(),
+                    "targets": np.atleast_1d(target_eval).tolist(),
+                    "deviations": (
+                        [float(deviation)]
+                        if not isinstance(target_eval, (list, np.ndarray))
+                        else np.abs(np.array(action_used_eval) - np.array(target_eval)).tolist()
+                    ),
+                    "avg_dev": float(np.mean(np.abs(np.array(action_used_eval) - np.array(target_eval)))),
+                    "cost": float(np.sum(np.array(action_used_eval) * np.array(prices_eval))),
+                }
+
+                node_results.append(node_result)
+                if node_result["avg_dev"] < 1.0:
+                    successes += 1
+
                 total_deviation += deviation
                 max_deviation = max(max_deviation, deviation)
                 num_evals += 1
@@ -494,19 +520,25 @@ def train_universal_agent_with_lsmc():
                 else:
                     deviation_by_type['intermediate'].append(deviation)
 
+        # After the loop
         avg_deviation = total_deviation / num_evals
         avg_terminal = np.mean(deviation_by_type['terminal']) if deviation_by_type['terminal'] else 0
         avg_intermediate = np.mean(deviation_by_type['intermediate']) if deviation_by_type['intermediate'] else 0
-        
+
         print(f"\nIteration {iteration + 1} Results:")
         print(f"  Overall Avg Deviation: {avg_deviation:.6f}")
         print(f"  Terminal Avg Deviation: {avg_terminal:.6f}")
         print(f"  Intermediate Avg Deviation: {avg_intermediate:.6f}")
         print(f"  Max Deviation: {max_deviation:.6f}")
+
         
         if avg_deviation < best_avg_deviation:
             best_avg_deviation = avg_deviation
             print(f"  ✓ NEW BEST!")
+        
+        # Save final evaluation results (overwrite each iteration; final iteration stays)
+        final_node_results = node_results
+        final_successes = successes
         
         if avg_deviation < 0.5:
             print(f"\n🎉 SUCCESS! Avg Deviation < 0.5 at iteration {iteration + 1}")
@@ -515,75 +547,98 @@ def train_universal_agent_with_lsmc():
     print(f"\n{'='*60}\nTRAINING COMPLETE!\n{'='*60}")
     print(f"Best Average Deviation: {best_avg_deviation:.6f}")
     print(f"Target was: < 1.0 for success")
-    return agent, lsmc_estimator
+    # return agent, lsmc_estimator, plus evaluation artifacts for final report
+    return agent, lsmc_estimator, final_node_results, final_successes
 
 # ============================================================
 # MAIN EXECUTION
 # ============================================================
-agent, lsmc_estimator = train_universal_agent_with_lsmc()
+agent, lsmc_estimator, node_results, successes = train_universal_agent_with_lsmc()
 
 # ============================================================
 # FINAL EVALUATION
 # ============================================================
-print("\n" + "="*60 + "\nFINAL EVALUATION\n" + "="*60)
+# ============================================================
+# FINAL EVALUATION — STRUCTURED HEDGE REPORT (TRINOMIAL)
+# ============================================================
 
-test_states = [(S0, 0)]
-test_states.extend([(S0 * u, 1), (S0 * m, 1), (S0 * d, 1)])
-if T_steps >= 2:
-    test_states.extend([
-        (S0 * u * u, 2), (S0 * u * m, 2), (S0 * m * m, 2),
-        (S0 * u * d, 2), (S0 * m * d, 2), (S0 * d * d, 2)
-    ])
+print("\n" + "=" * 60)
+print("HEDGE STRUCTURE — TRINOMIAL MODEL")
+print("=" * 60)
+print(f"Goal: Determine how many binary/trinomial contracts to hold at each node")
+print(f"Mode: REPLICATION ANALYSIS")
+print("=" * 60)
 
-print("\nAgent Performance at Key States:")
-print("-" * 100)
+for node in node_results:
+    S, t = node["S"], node["t"]
+    hedges = node.get("hedges", [])
+    targets = node.get("targets", [])
+    devs = node.get("deviations", [])
+    avg_dev = node.get("avg_dev", 0.0)
+    cost = node.get("cost", 0.0)
 
-success_count = 0
-total_tests = 0
+    print(f"\nt = {t} | S = {S:.2f}")
+    print("-" * 60)
 
-for S, t in sorted(list(set(test_states)), key=lambda x: (x[1], -x[0])):
-    is_terminal = (t == T_steps)
-    
-    if is_terminal:
-        target = max(S - K, 0)
-        prices = [np.exp(-r * dt)]
+    # Continuation targets
+    if len(targets) == 3:
+        print("Continuation targets:")
+        print(f"  Up   : ${targets[0]:.4f}")
+        print(f"  Mid  : ${targets[1]:.4f}")
+        print(f"  Down : ${targets[2]:.4f}")
+    elif len(targets) == 2:
+        print("Continuation targets:")
+        print(f"  Up   : ${targets[0]:.4f}")
+        print(f"  Down : ${targets[1]:.4f}")
     else:
-        target = lsmc_estimator.predict_child_continuation_values(S, t)
-        prices = [np.exp(-r * dt) * p for p in [p_u, p_m, p_d]]
-    
-    state = construct_state(S, t, target)
-    action = agent.select_action(state, add_noise=False)
-    action_used = action[:1] if is_terminal else action[:3]
-    
-    _, cost, deviation = compute_reward(action_used, target, prices, is_terminal, child_occurred=None)
-    
-    is_success = deviation < 1.0
-    if is_success:
-        success_count += 1
-    total_tests += 1
-    
-    print(f"\nState: S=${S:.2f}, t={t}")
-    if is_terminal:
-        print(f"  Target: ${target:.4f}, Hedge: ${action_used[0]:.4f}")
-        print(f"  Cost: ${cost:.4f}, Deviation: {deviation:.6f} {'✓' if is_success else '✗'}")
-    else:
-        print(f"  Targets: [Up=${target[0]:.4f}, Mid=${target[1]:.4f}, Down=${target[2]:.4f}]")
-        print(f"  Hedges: [{action_used[0]:.4f}, {action_used[1]:.4f}, {action_used[2]:.4f}]")
-        print(f"  Cost: ${cost:.4f}")
-        
-        dev_up = abs(action_used[0] - target[0])
-        dev_mid = abs(action_used[1] - target[1])
-        dev_down = abs(action_used[2] - target[2])
-        
-        print(f"  Individual Devs: Up={dev_up:.4f}, Mid={dev_mid:.4f}, Down={dev_down:.4f}")
-        print(f"  Average Deviation: {deviation:.6f} {'✓' if is_success else '✗'}")
+        print(f"Terminal target: ${targets[0]:.4f}")
 
-print("\n" + "="*60)
-print(f"SUCCESS RATE: {success_count}/{total_tests} ({100*success_count/total_tests:.1f}%)")
-print("="*60)
-print("AGGRESSIVE COMPLETE MARKET APPROACH:")
-print(f"  • Accuracy/Cost Ratio: {REPLICATION_PENALTY/COST_WEIGHT:,.0f}:1")
-print(f"  • Total Training: {TOTAL_EPISODES:,} episodes")
-print(f"  • Network Capacity: {HIDDEN_DIM} hidden units, 4 layers")
-print("  • Child tracking for correct complete market structure")
-print("="*60)
+    print("-" * 60)
+
+    # Hedge vector
+    if len(hedges) == 3:
+        print("Binary holdings (hedge composition):")
+        print(f"  Up   : {hedges[0]:+,.4f}")
+        print(f"  Mid  : {hedges[1]:+,.4f}")
+        print(f"  Down : {hedges[2]:+,.4f}")
+    elif len(hedges) == 2:
+        print("Binary holdings (hedge composition):")
+        print(f"  Up   : {hedges[0]:+,.4f}")
+        print(f"  Down : {hedges[1]:+,.4f}")
+    else:
+        print("Terminal binary holding:")
+        print(f"  {hedges[0]:+,.4f}")
+
+    print("-" * 60)
+    print(f"Total hedge cost   : {cost:+.4f}")
+
+    # Deviations
+    if len(devs) == 3:
+        print(f"Individual deviations:")
+        print(f"  Up   : {devs[0]:.4f}")
+        print(f"  Mid  : {devs[1]:.4f}")
+        print(f"  Down : {devs[2]:.4f}")
+    elif len(devs) == 2:
+        print(f"Individual deviations:")
+        print(f"  Up   : {devs[0]:.4f}")
+        print(f"  Down : {devs[1]:.4f}")
+    else:
+        print(f"Deviation: {devs[0]:.4f}")
+
+    print(f"Average deviation   : {avg_dev:.6f} {'✓' if avg_dev < 1.0 else '✗'}")
+    print("-" * 60)
+
+    # Interpretation
+    if avg_dev < 0.1:
+        meaning = "→ Perfect replication (binary weights match targets)"
+    elif avg_dev < 1.0:
+        meaning = "→ Near-replication"
+    else:
+        meaning = "→ Poor replication — hedge not aligned with continuation"
+    print(f"Interpretation:\n  {meaning}")
+    print("=" * 60)
+
+# Summary
+print("\n" + "=" * 60)
+print(f"SUCCESS RATE: {successes}/{len(node_results)} ({successes/len(node_results)*100:.1f}%)")
+print("=" * 60)
