@@ -627,76 +627,117 @@ agent, lsmc_estimator = train_universal_agent_with_lsmc()
 # ============================================================
 # FINAL EVALUATION
 # ============================================================
-print("\n" + "="*60)
-print("FINAL EVALUATION")
-print("="*60)
+# ============================================================
+# FINAL EVALUATION — FORMATTED HEDGE STRUCTURE REPORT
+# ============================================================
+print("\n" + "=" * 60)
+print("HEDGE STRUCTURE — BINOMIAL MODEL")
+print("=" * 60)
+print(f"Goal: Determine binary holdings at each node to replicate continuation value")
+print(f"Mode: PERFECT REPLICATION (Complete Market)")
+print("-" * 60)
+print(f"Binary contract discount: exp(-r*dt) = {np.exp(-r*dt):.4f}")
+print("=" * 60)
 
-# Calculate theoretical values for comparison
+# Theoretical comparison function
 def calculate_theoretical_value(S, t):
-    """Calculate theoretical option value using backward induction"""
+    """Theoretical European call price by backward induction"""
     if t == T_steps:
         return max(S - K, 0)
-    
-    # Recursive calculation
     V_up = calculate_theoretical_value(S * u, t + 1)
     V_down = calculate_theoretical_value(S * d, t + 1)
-    
     return np.exp(-r * dt) * (q * V_up + (1 - q) * V_down)
 
-# Evaluate at key states
+# Evaluate hedge at key states
 test_states = [
-    (S0, 0),  # Initial state
-    (S0 * u, 1),  # After one up
-    (S0 * d, 1),  # After one down
+    (S0, 0),            # initial
+    (S0 * u, 1),        # up
+    (S0 * d, 1),        # down
 ]
-
 if T_steps >= 2:
-    test_states.extend([
-        (S0 * u * u, 2),  # Two ups
-        (S0, 2),  # One up, one down
-        (S0 * d * d, 2),  # Two downs
-    ])
+    test_states += [
+        (S0 * u * u, 2),
+        (S0, 2),
+        (S0 * d * d, 2),
+    ]
 
-print("\nAgent Performance vs. Theoretical Values:")
-print("-" * 80)
+node_results = []
 for S, t in test_states:
     is_terminal = (t == T_steps)
-    
-    # Theoretical value
     theoretical = calculate_theoretical_value(S, t)
-    
-    if is_terminal:
-        target = max(S - K, 0)
-        n_binaries = 1
-        prices = [np.exp(-r * dt)]
-    else:
-        target = lsmc_estimator.predict_continuation_value(S, t)
-        n_binaries = 2
-        prices = [np.exp(-r * dt), np.exp(-r * dt)]
-    
+    target = max(S - K, 0) if is_terminal else lsmc_estimator.predict_continuation_value(S, t)
+
+    n_binaries = 1 if is_terminal else 2
+    prices = [np.exp(-r * dt)] * n_binaries
     state = construct_state(S, t, target)
     action = agent.select_action(state, add_noise=False)
-    
-    if is_terminal:
-        action_used = np.maximum(action[:1], 0)
-        prices_used = prices[:1]
-    else:
-        action_used = action[:n_binaries]
-        prices_used = prices[:n_binaries]
-    
-    _, cost, shortfall = compute_reward(action_used, target, prices_used, is_terminal)
-    realized = np.sum(action_used)
-    
-    print(f"\nState: S=${S:.2f}, t={t}")
-    print(f"  Theoretical Value: ${theoretical:.4f}")
-    error_pct = abs(target-theoretical)/theoretical*100 if theoretical > 0 else 0.0
-    print(f"  LSMC Estimate: ${target:.4f} (Error: {error_pct:.2f}%)")
-    print(f"  Hedge: {action_used}")
-    print(f"  Realized Value: ${realized:.4f}")
-    print(f"  Cost: ${cost:.4f}")
-    print(f"  Shortfall: {shortfall:.6f}")
-    print(f"  Excess: {max(0, realized - target):.6f}")
+    action_used = np.maximum(action[:n_binaries], 0) if is_terminal else action[:n_binaries]
 
-print("\n" + "="*60)
+    _, cost, shortfall = compute_reward(action_used, target, prices, is_terminal)
+    realized = np.sum(action_used)
+    excess = max(0, realized - target)
+
+    node_results.append({
+        "S": S,
+        "t": t,
+        "target": target,
+        "theoretical": theoretical,
+        "hedge": action_used,
+        "cost": cost,
+        "realized": realized,
+        "shortfall": shortfall,
+        "excess": excess
+    })
+
+# Pretty print all nodes
+for node in node_results:
+    S, t = node["S"], node["t"]
+    print(f"\nt = {t} | S = {S:.2f}")
+    print("-" * 60)
+    print(f"Target (continuation) value : {node['target']:.4f}")
+    print(f"Theoretical value           : {node['theoretical']:.4f}")
+    print("-" * 60)
+
+    hedge = node['hedge']
+    if len(hedge) == 2:
+        print("Hedge composition (Binary Holdings):")
+        print(f"  Down binary : {hedge[0]:+,.4f}")
+        print(f"  Up binary   : {hedge[1]:+,.4f}")
+    else:
+        print("Hedge composition (Binary Holdings):")
+        print(f"  Terminal binary : {hedge[0]:+,.4f}")
+    print("-" * 60)
+
+    print(f"Replication cost : {node['cost']:.4f}")
+    print(f"Realized value   : {node['realized']:.4f}")
+    print(f"Shortfall        : {node['shortfall']:.4f}")
+    print(f"Excess           : {node['excess']:.4f}")
+    print("-" * 60)
+
+    # Interpretation
+    if abs(node['shortfall']) < 1e-3 and abs(node['excess']) < 1e-3:
+        interp = "→ Perfect replication achieved"
+    elif node['shortfall'] > 0:
+        interp = f"→ Under-replication (shortfall = {node['shortfall']:.4f})"
+    else:
+        interp = f"→ Over-replication (excess = {node['excess']:.4f})"
+    print(f"Interpretation:\n  {interp}")
+    print("=" * 60)
+
+# Global summary
+avg_shortfall = np.mean([n["shortfall"] for n in node_results])
+avg_excess = np.mean([n["excess"] for n in node_results])
+max_mag = np.max([abs(v) for n in node_results for v in n["hedge"]])
+
+print("\n" + "=" * 60)
+print("REPLICATION SUMMARY")
+print("=" * 60)
+print(f"• Total nodes evaluated      : {len(node_results)}")
+print(f"• Avg shortfall              : {avg_shortfall:.6f}")
+print(f"• Avg excess                 : {avg_excess:.6f}")
+print(f"• Max abs hedge magnitude    : {max_mag:.4f}")
+print(f"• Market type                : COMPLETE (binomial)")
+print(f"• Result                     : {'Exact replication' if avg_shortfall < 0.01 else 'Approximate replication'}")
+print("=" * 60)
 print("DONE!")
-print("="*60)
+print("=" * 60)
