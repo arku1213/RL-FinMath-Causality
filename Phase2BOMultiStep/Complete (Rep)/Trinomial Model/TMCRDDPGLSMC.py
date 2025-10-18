@@ -33,7 +33,7 @@ max_terminal_payoff = max(max_stock_price - K, 0)
 ACTION_SCALE = max_terminal_payoff * 3.0
 
 # CRITICAL: Make accuracy MUCH more important than cost
-REPLICATION_PENALTY = 10000  # Very high - must match exactly
+REPLICATION_PENALTY = 20000  # Very high - must match exactly
 EXTREME_PENALTY_WEIGHT = 100
 COST_WEIGHT = 0.0001         # Very low - cost barely matters
 
@@ -350,24 +350,45 @@ def construct_state(S, t, target_values):
 def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occurred=None):
     """
     REPLICATION REWARD: Match exactly (symmetric penalty)
+    WITH CONSISTENT RELATIVE DEVIATION (Option 3 Fixed)
     """
     hedge = np.atleast_1d(hedge)
     cost = np.sum(hedge * binary_prices)
+    epsilon = 1.0  # Prevent division by zero
     
     if is_terminal:
-        deviation = abs(hedge[0] - target_values)
+        # FIXED: Use relative deviation for terminals too!
+        target_val = target_values
+        hedge_val = hedge[0]
+        
+        # Relative deviation (consistent with intermediate)
+        deviation = abs(hedge_val - target_val) / (abs(target_val) + epsilon)
         extreme_penalty = 0
         penalty_multiplier = 1.0
     else:
         # CRITICAL: Use child_occurred if available (for training)
         if child_occurred is not None:
             # Only the binary that pays off matters!
-            deviation = abs(hedge[child_occurred] - target_values[child_occurred])
+            target_val = target_values[child_occurred]
+            hedge_val = hedge[child_occurred]
+            
+            # Relative deviation
+            deviation = abs(hedge_val - target_val) / (abs(target_val) + epsilon)
             penalty_multiplier = 1.0
         else:
-            # Evaluation mode: check all 3
-            deviations = [abs(hedge[i] - target_values[i]) for i in range(3)]
-            deviation = np.mean(deviations)
+            # Evaluation mode: check all 3 with relative weighting
+            relative_deviations = []
+            
+            for i in range(3):
+                target_val = target_values[i]
+                hedge_val = hedge[i]
+                
+                # Relative deviation for each binary
+                rel_dev = abs(hedge_val - target_val) / (abs(target_val) + epsilon)
+                relative_deviations.append(rel_dev)
+            
+            # Average relative deviation
+            deviation = np.mean(relative_deviations)
             penalty_multiplier = 1.0
         
         # Extreme position penalty
@@ -379,7 +400,8 @@ def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occur
         
         extreme_penalty = sum(max(0, abs(h) - max_reasonable)**2 for h in hedge)
     
-    normalized_deviation = deviation / (max_terminal_payoff if max_terminal_payoff > 0 else 1.0)
+    # Deviation is already relative (unitless ratio) - no normalization needed
+    normalized_deviation = deviation
     
     # REPLICATION: symmetric penalty on deviation
     reward = -(COST_WEIGHT * abs(cost) 
@@ -586,10 +608,4 @@ for S, t in unique_states:
 
 print("\n" + "="*60)
 print(f"SUCCESS RATE: {success_count}/{total_tests} ({100*success_count/total_tests:.1f}%)")
-print("="*60)
-print("\nCOMPLETE MARKET REPLICATION SUMMARY:")
-print(f"• 3 states, 3 binaries → COMPLETE")
-print(f"• Multi-child training: 3× data per sample")
-print(f"• Replication penalty: {REPLICATION_PENALTY}")
-print(f"• Target: < 1.0 deviation for success")
 print("="*60)
