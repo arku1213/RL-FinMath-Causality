@@ -4,223 +4,209 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import random
-from scipy.optimize import linprog
+from scipy.optimize import minimize
 
 # ============================================================
-# CONFIGURATION - CHANGE N AND T HERE!
+# CONFIGURATION
 # ============================================================
 S0 = 100.0
-K = 100.0
 r = 0.05
+K = 100.0
+T_steps = 2
 dt = 1.0
 
-# N-nomial parameters
-N = 5  # ← CHANGE THIS: Number of states (2=binomial, 3=trinomial, 4, 5, etc.)
-T_steps = 5  # ← CHANGE THIS: Time steps
+# N-NOMIAL PARAMETERS - COMPLETE MARKET
+N = 5  # Number of states (3=trinomial, 4=4-nomial, 5=5-nomial, etc.)
+sigma = 0.3
 
 # LSMC Parameters
-NUM_SIMULATIONS = 10000  # Paths to simulate
-POLYNOMIAL_DEGREE = 3    # Polynomial degree for regression
-REGRESSION_ALPHA = 0.1   # Ridge regularization
+NUM_SIMULATIONS = 10000
+POLYNOMIAL_DEGREE = 3
+REGRESSION_ALPHA = 0.1
 
-# Universal Agent Hyperparameters
-TOTAL_EPISODES = 150000  # Total training episodes
-NUM_ITERATIONS = 10  # INCREASED for better convergence with N-nomial
-BATCH_SIZE = 128
+# ============================================================
+# FINANCIAL MATH: N-NOMIAL SUPER-REPLICATION (COMPLETE MARKET)
+# ============================================================
+ACTOR_LR = 0.00005
+CRITIC_LR = 0.00015
+
+# Calculate max possible payoff for scaling
+def calculate_max_payoff(N, S0, sigma, dt, T_steps, K):
+    """Calculate maximum possible terminal stock price"""
+    # For N-nomial, the highest multiplier is approximately:
+    max_multiplier = np.exp(sigma * np.sqrt(dt * N))
+    max_stock = S0 * (max_multiplier ** T_steps)
+    return max(max_stock - K, 0)
+
+max_terminal_payoff = calculate_max_payoff(N, S0, sigma, dt, T_steps, K)
+ACTION_SCALE = max_terminal_payoff * 10.0
+
+# SUPER-REPLICATION: Asymmetric penalties
+SHORTFALL_PENALTY = 100000000  # HUGE - must NEVER underpay!
+EXCESS_PENALTY = 100           # SMALL - overpayment okay but minimize
+COST_WEIGHT = 0.1              # LOW - but still care about efficiency
+
+# Training
+TOTAL_EPISODES = 540000
+NUM_ITERATIONS = 12
+BATCH_SIZE = 256
 GAMMA = 0.99
 TAU = 0.005
-ACTOR_LR = 0.0003
-CRITIC_LR = 0.0008
-BUFFER_SIZE = 200000
+BUFFER_SIZE = 500000
 HIDDEN_DIM = 256
 
-# Super-Replication Parameters
-SUPER_REPLICATION = True
-SHORTFALL_MULTIPLIER = 600 + T_steps * 200 + (N - 2) * 100  # Scales with N and T
-COST_WEIGHT = 0.01  # Low - accept higher cost for super-replication
-EXCESS_PENALTY = 0.01  # Low - excess is okay
+print("="*60)
+print(f"FINANCIAL MATH: {N}-NOMIAL SUPER-REPLICATION (T={T_steps})")
+print("="*60)
+print("GOAL: Find minimum cost hedge that NEVER underpays")
+print(f"Market: {N} states → {N} binaries (COMPLETE)")
+print(f"Shortfall Penalty: {SHORTFALL_PENALTY:,} (MUST NEVER UNDERPAY)")
+print(f"Excess Penalty: {EXCESS_PENALTY} (minimize overpayment)")
+print(f"Cost Weight: {COST_WEIGHT} (seek efficiency)")
+print("="*60)
 
 # ============================================================
 # N-NOMIAL PARAMETERS
 # ============================================================
-def calculate_n_nomial_parameters(N, S0, r, dt):
-    """Calculate stock price multipliers and risk-neutral probabilities"""
-    sigma = 0.2
-    u = np.exp(sigma * np.sqrt(dt))
-    d = 1 / u
+def calculate_nnomial_parameters(N, S0, sigma, dt, r):
+    """
+    Calculate N-nomial tree parameters and risk-neutral probabilities
     
-    # Generate multipliers symmetrically
-    multipliers = []
-    if N == 2:
-        multipliers = [u, d]
-    elif N == 3:
-        multipliers = [u, 1.0, d]
-    else:
-        for i in range(N):
-            exponent = ((N - 1 - 2*i) / (N - 1))
-            if exponent > 0:
-                multipliers.append(u ** exponent)
-            elif exponent < 0:
-                multipliers.append(d ** abs(exponent))
-            else:
-                multipliers.append(1.0)
+    For N states, create symmetric moves around the middle state
+    Middle state has m = 1.0 (stock stays same)
+    """
+    # Create N symmetric multipliers centered around 1.0
+    moves = []
+    lambda_param = sigma * np.sqrt(dt * N)
     
-    # Solve for risk-neutral probabilities using linear programming
+    for i in range(N):
+        # Map i ∈ [0, N-1] to multipliers symmetrically around 1.0
+        # i=0 → down most, i=N-1 → up most, middle ≈ 1.0
+        offset = (i - (N-1)/2) * 2 / (N-1)  # Maps to [-1, +1]
+        multiplier = np.exp(offset * lambda_param)
+        moves.append(multiplier)
+    
+    # Calculate risk-neutral probabilities
     growth = np.exp(r * dt)
-    c = np.zeros(N)  # Objective (all zeros - just find feasible solution)
-    A_eq = np.array([np.ones(N), multipliers])
-    b_eq = np.array([1.0, growth])
     
-    # Bounds to ensure positive probabilities
-    MIN_PROB = 0.01
-    max_prob = 1.0 - MIN_PROB * (N - 1)
-    bounds = [(MIN_PROB, max_prob) for _ in range(N)]
+    def objective(p):
+        # Minimize squared deviation from uniform (entropy maximization proxy)
+        return np.sum((p - 1/N)**2)
     
-    result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+    def constraint_mean(p):
+        # Expected growth must match risk-free rate
+        return np.dot(p, moves) - growth
     
-    if not result.success:
-        print("WARNING: Could not find valid probabilities, using uniform")
-        probabilities = np.ones(N) / N
+    def constraint_sum(p):
+        # Probabilities must sum to 1
+        return np.sum(p) - 1
+    
+    # Initial guess: uniform distribution
+    p0 = np.ones(N) / N
+    
+    # Constraints
+    cons = [
+        {'type': 'eq', 'fun': constraint_mean},
+        {'type': 'eq', 'fun': constraint_sum}
+    ]
+    
+    # Bounds: all probabilities between 0.001 and 0.999
+    bounds = [(0.001, 0.999) for _ in range(N)]
+    
+    result = minimize(objective, p0, method='SLSQP', bounds=bounds, constraints=cons)
+    
+    if result.success:
+        probs = result.x
     else:
-        probabilities = result.x
+        print("WARNING: Optimization failed, using fallback uniform probabilities")
+        probs = np.ones(N) / N
     
-    # Validation
-    prob_sum = np.sum(probabilities)
-    expected_growth = np.sum(probabilities * multipliers)
-    min_prob = np.min(probabilities)
+    # Verify constraints
+    expected_growth = np.dot(probs, moves)
+    prob_sum = np.sum(probs)
     
-    print(f"\nN={N}-nomial Parameters:")
-    print(f"  Multipliers: {[f'{m:.4f}' for m in multipliers]}")
-    print(f"  Probabilities: {[f'{p:.4f}' for p in probabilities]}")
-    print(f"  Min probability: {min_prob:.4f}")
-    print(f"  Sum of probabilities: {prob_sum:.6f}")
-    print(f"  Expected growth: {expected_growth:.6f} (target: {growth:.6f})")
+    print(f"\n{N}-nomial Parameters:")
+    print(f"  Moves: {[f'{m:.4f}' for m in moves]}")
+    print(f"  Probs: {[f'{p:.4f}' for p in probs]}")
+    print(f"  Sum = {prob_sum:.6f}, Expected growth = {expected_growth:.6f} (target={growth:.6f})")
     
-    return multipliers, probabilities
+    assert abs(prob_sum - 1.0) < 1e-6, f"Probabilities don't sum to 1: {prob_sum}"
+    assert abs(expected_growth - growth) < 1e-2, f"Growth mismatch: {expected_growth} vs {growth}"
+    assert all(p >= 0 for p in probs), "Negative probabilities detected"
+    
+    print("  ✓ Valid risk-neutral probabilities")
+    
+    return moves, probs
 
-multipliers, probabilities = calculate_n_nomial_parameters(N, S0, r, dt)
+moves, probs = calculate_nnomial_parameters(N, S0, sigma, dt, r)
 
 # ============================================================
-# DYNAMIC ACTION_SCALE
-# ============================================================
-max_stock_price = S0 * max(multipliers) ** T_steps
-max_terminal_payoff = max(max_stock_price - K, 0)
-
-# Adaptive scaling based on N and T
-if SUPER_REPLICATION:
-    CONTINUATION_MULTIPLIER = 3.0 + (T_steps * 1.0) + (N - 2) * 1.5 + 2.0  # Extra for super-rep
-else:
-    CONTINUATION_MULTIPLIER = 3.0 + (T_steps * 0.7) + (N - 2) * 1.0
-
-ACTION_SCALE = max(300.0, max_terminal_payoff * CONTINUATION_MULTIPLIER)
-
-print("="*60)
-print(f"LSMC + UNIVERSAL AGENT: N={N}-NOMIAL, T={T_steps}")
-print(f"MODE: SUPER-REPLICATION (Incomplete Market)")
-print("="*60)
-print(f"LSMC Simulations: {NUM_SIMULATIONS}")
-print(f"Polynomial Degree: {POLYNOMIAL_DEGREE}")
-print(f"Total Training Episodes: {TOTAL_EPISODES}")
-print(f"Iterations: {NUM_ITERATIONS}")
-print(f"Action Scale: ±{ACTION_SCALE:.1f}")
-print(f"Continuation Multiplier: {CONTINUATION_MULTIPLIER:.1f}×")
-print(f"Shortfall Multiplier: {SHORTFALL_MULTIPLIER}× (STRONG)")
-print(f"Cost Weight: {COST_WEIGHT} (LOW)")
-print(f"Excess Penalty: {EXCESS_PENALTY} (LOW)")
-print("="*60)
-
-# ============================================================
-# POLYNOMIAL FEATURES
+# UTILITIES
 # ============================================================
 def create_polynomial_features(X, degree):
-    X = np.array(X)
-    if X.ndim == 1:
-        X = X.reshape(-1, 1)
-    
-    n_samples = X.shape[0]
-    features = np.ones((n_samples, degree + 1))
-    for d in range(1, degree + 1):
-        features[:, d] = (X[:, 0] ** d)
-    
+    X = np.array(X).reshape(-1, 1)
+    features = np.ones((X.shape[0], degree + 1))
+    for d_ in range(1, degree + 1):
+        features[:, d_] = (X[:, 0] ** d_)
     return features
 
-# ============================================================
-# RIDGE REGRESSION
-# ============================================================
 class RidgeRegression:
     def __init__(self, alpha=1.0):
         self.alpha = alpha
         self.coef_ = None
-        self.intercept_ = None
     
     def fit(self, X, y):
-        X = np.array(X)
-        y = np.array(y)
-        
         n_features = X.shape[1]
         XtX = X.T @ X
         reg_matrix = self.alpha * np.eye(n_features)
-        
         try:
             self.coef_ = np.linalg.solve(XtX + reg_matrix, X.T @ y)
         except np.linalg.LinAlgError:
             self.coef_ = np.linalg.lstsq(XtX + reg_matrix, X.T @ y, rcond=None)[0]
-        
-        self.intercept_ = 0
         return self
     
     def predict(self, X):
-        X = np.array(X)
         return X @ self.coef_
-    
-    def score(self, X, y):
-        y_pred = self.predict(X)
-        ss_res = np.sum((y - y_pred) ** 2)
-        ss_tot = np.sum((y - np.mean(y)) ** 2)
-        return 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
 
 # ============================================================
-# PATH SIMULATION - N-NOMIAL
+# PATH SIMULATION
 # ============================================================
 class NnomialPathSimulator:
-    """Simulate paths through N-nomial lattice"""
-    
-    def __init__(self, S0, multipliers, probabilities, T_steps, dt):
+    def __init__(self, S0, moves, probs, T_steps, dt):
         self.S0 = S0
-        self.multipliers = multipliers
-        self.probabilities = probabilities
-        self.N = len(multipliers)
+        self.moves = moves
+        self.probs = probs
+        self.N = len(moves)
         self.T_steps = T_steps
         self.dt = dt
     
     def simulate_paths(self, num_paths):
-        """Simulate random paths through N-nomial lattice"""
         paths = []
+        cumulative_probs = np.cumsum(self.probs)
         
         for _ in range(num_paths):
             path = []
             S = self.S0
             
             for t in range(self.T_steps + 1):
-                path.append({
-                    'S': S,
-                    't': t,
+                path_step = {
+                    'S': S, 
+                    't': t, 
                     'payoff': max(S - K, 0) if t == self.T_steps else None,
-                    'value': None
-                })
+                    'child_occurred': None
+                }
                 
                 if t < self.T_steps:
-                    # Random transition based on probabilities
+                    # Sample which child state occurs
                     rand = np.random.random()
-                    cumsum = 0
-                    for i in range(self.N):
-                        cumsum += self.probabilities[i]
-                        if rand < cumsum:
-                            S = S * self.multipliers[i]
-                            break
-            
+                    child_idx = np.searchsorted(cumulative_probs, rand)
+                    child_idx = min(child_idx, self.N - 1)  # Safety
+                    
+                    S *= self.moves[child_idx]
+                    path_step['child_occurred'] = child_idx
+                
+                path.append(path_step)
             paths.append(path)
-        
         return paths
 
 # ============================================================
@@ -234,132 +220,102 @@ class LSMCEstimator:
         self.T_steps = T_steps
     
     def estimate_continuation_values(self, paths, r, dt):
-        print("\n" + "="*60)
-        print("RUNNING LSMC ESTIMATION")
-        print("="*60)
+        print("\n" + "="*60 + "\nRUNNING LSMC ESTIMATION\n" + "="*60)
         
         # Initialize terminal values
         for path in paths:
-            terminal = path[-1]
-            terminal['value'] = terminal['payoff']
+            path[-1]['value'] = path[-1]['payoff']
         
-        # Work backwards through time
+        # Backward induction through time
         for t in range(self.T_steps - 1, -1, -1):
-            print(f"\nTime t={t}: Fitting continuation value regression")
-            
-            X = []
-            y = []
-            
+            X, y = [], []
             for path in paths:
-                current_state = path[t]
-                future_state = path[t + 1]
-                
-                S_t = current_state['S']
-                V_future = future_state['value']
-                
-                continuation_value = np.exp(-r * dt) * V_future
-                
-                X.append(S_t)
-                y.append(continuation_value)
-            
-            X = np.array(X)
-            y = np.array(y)
+                X.append(path[t]['S'])
+                y.append(np.exp(-r * dt) * path[t+1]['value'])
             
             X_poly = create_polynomial_features(X, self.poly_degree)
-            
-            model = RidgeRegression(alpha=self.alpha)
-            model.fit(X_poly, y)
-            
+            model = RidgeRegression(alpha=self.alpha).fit(X_poly, y)
             self.continuation_models[t] = model
             
-            # Update path values
             for path in paths:
-                current_state = path[t]
-                S_t = current_state['S']
+                S_t = path[t]['S']
                 X_pred = create_polynomial_features([S_t], self.poly_degree)
-                current_state['value'] = model.predict(X_pred)[0]
-            
-            predicted = model.predict(X_poly)
-            mse = np.mean((y - predicted) ** 2)
-            r2 = model.score(X_poly, y)
-            print(f"  Regression MSE: {mse:.6f}, R²: {r2:.4f}")
-            print(f"  Value range: [{np.min(y):.2f}, {np.max(y):.2f}]")
+                path[t]['value'] = model.predict(X_pred)[0]
         
-        print("\n" + "="*60)
-        print("LSMC ESTIMATION COMPLETE")
-        print("="*60)
-        
+        print("LSMC ESTIMATION COMPLETE\n" + "="*60)
         return paths
     
     def predict_continuation_value(self, S, t):
-        if t not in self.continuation_models:
+        if t not in self.continuation_models: 
             return 0.0
-        
         X = create_polynomial_features([S], self.poly_degree)
         return self.continuation_models[t].predict(X)[0]
+    
+    def predict_child_continuation_values(self, S, t):
+        """Returns [V_0, V_1, ..., V_{N-1}] for all N children"""
+        if t >= self.T_steps - 1:
+            # Terminal: return actual payoffs
+            return [max(S * move - K, 0) for move in moves]
+        else:
+            # Intermediate: predict continuation values
+            return [self.predict_continuation_value(S * move, t + 1) for move in moves]
 
 # ============================================================
-# UNIVERSAL AGENT
+# DDPG AGENT
 # ============================================================
 class UniversalActor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, hidden_dim):
         super(UniversalActor, self).__init__()
         self.fc1 = nn.Linear(state_dim, hidden_dim)
-        self.ln1 = nn.LayerNorm(hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.ln2 = nn.LayerNorm(hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        self.ln3 = nn.LayerNorm(hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, action_dim)
         
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.xavier_uniform_(self.fc3.weight)
         nn.init.uniform_(self.fc4.weight, -0.003, 0.003)
-        nn.init.uniform_(self.fc4.bias, 0.0, 0.01)
     
     def forward(self, state):
-        x = torch.relu(self.ln1(self.fc1(state)))
-        x = torch.relu(self.ln2(self.fc2(x)))
-        x = torch.relu(self.ln3(self.fc3(x)))
+        x = torch.relu(self.fc1(state))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
         x = torch.tanh(self.fc4(x)) * ACTION_SCALE
         return x
 
 class UniversalCritic(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, hidden_dim):
         super(UniversalCritic, self).__init__()
         self.fc1 = nn.Linear(state_dim + action_dim, hidden_dim)
-        self.ln1 = nn.LayerNorm(hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.ln2 = nn.LayerNorm(hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, hidden_dim)
-        self.ln3 = nn.LayerNorm(hidden_dim)
         self.fc4 = nn.Linear(hidden_dim, 1)
         
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.xavier_uniform_(self.fc2.weight)
+        nn.init.xavier_uniform_(self.fc3.weight)
         nn.init.uniform_(self.fc4.weight, -0.003, 0.003)
-        nn.init.uniform_(self.fc4.bias, -0.003, 0.003)
-    
+
     def forward(self, state, action):
         x = torch.cat([state, action], dim=1)
-        x = torch.relu(self.ln1(self.fc1(x)))
-        x = torch.relu(self.ln2(self.fc2(x)))
-        x = torch.relu(self.ln3(self.fc3(x)))
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        x = torch.relu(self.fc3(x))
         x = self.fc4(x)
         return x
 
 class OUNoise:
     def __init__(self, action_dim, mu=0, theta=0.15, sigma=0.3):
-        self.action_dim = action_dim
-        self.mu = mu
-        self.theta = theta
-        self.sigma = sigma
-        self.state = np.ones(action_dim) * mu
+        self.action_dim, self.mu, self.theta, self.sigma = action_dim, mu, theta, sigma
         self.reset()
     
     def reset(self):
         self.state = np.ones(self.action_dim) * self.mu
     
-    def sample(self, decay_factor=1.0):
+    def sample(self, decay=1.0):
         dx = self.theta * (self.mu - self.state) + self.sigma * np.random.randn(self.action_dim)
         self.state += dx
-        return self.state * decay_factor
+        return self.state * decay
 
 class ReplayBuffer:
     def __init__(self, capacity):
@@ -369,16 +325,13 @@ class ReplayBuffer:
         self.buffer.append((state, action, reward, next_state, done))
     
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return (np.array(states), np.array(actions), np.array(rewards),
-                np.array(next_states), np.array(dones))
+        return random.sample(self.buffer, batch_size)
     
     def __len__(self):
         return len(self.buffer)
 
 class UniversalDDPGAgent:
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, hidden_dim):
         self.actor = UniversalActor(state_dim, action_dim, hidden_dim)
         self.actor_target = UniversalActor(state_dim, action_dim, hidden_dim)
         self.actor_target.load_state_dict(self.actor.state_dict())
@@ -399,18 +352,17 @@ class UniversalDDPGAgent:
         with torch.no_grad():
             action = self.actor(state).cpu().numpy()[0]
         self.actor.train()
-        
         if add_noise:
             action += self.noise.sample(noise_decay)
-        
         return action
     
     def update(self, batch_size):
-        if len(self.replay_buffer) < batch_size:
-            return None, None
+        if len(self.replay_buffer) < batch_size: 
+            return
         
-        states, actions, rewards, next_states, dones = self.replay_buffer.sample(batch_size)
-        
+        batch = self.replay_buffer.sample(batch_size)
+        states, actions, rewards, next_states, dones = map(np.array, zip(*batch))
+
         states = torch.FloatTensor(states)
         actions = torch.FloatTensor(actions)
         rewards = torch.FloatTensor(rewards).unsqueeze(1)
@@ -419,8 +371,7 @@ class UniversalDDPGAgent:
         
         with torch.no_grad():
             next_actions = self.actor_target(next_states)
-            target_q = self.critic_target(next_states, next_actions)
-            target_q = rewards + (1 - dones) * GAMMA * target_q
+            target_q = rewards + (1 - dones) * GAMMA * self.critic_target(next_states, next_actions)
         
         current_q = self.critic(states, actions)
         critic_loss = nn.MSELoss()(current_q, target_q)
@@ -431,274 +382,283 @@ class UniversalDDPGAgent:
         self.critic_optimizer.step()
         
         actor_loss = -self.critic(states, self.actor(states)).mean()
-        
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0)
         self.actor_optimizer.step()
         
         for target_param, param in zip(self.actor_target.parameters(), self.actor.parameters()):
-            target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
+            target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
         
         for target_param, param in zip(self.critic_target.parameters(), self.critic.parameters()):
-            target_param.data.copy_(TAU * param.data + (1 - TAU) * target_param.data)
-        
-        return actor_loss.item(), critic_loss.item()
+            target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
 
 # ============================================================
-# STATE & REWARD - SUPER-REPLICATION
+# STATE & REWARD - SUPER-REPLICATION (ASYMMETRIC)
 # ============================================================
-def construct_state(S, t, target_value):
-    return np.array([
-        S / S0,
-        target_value / max_terminal_payoff if max_terminal_payoff > 0 else 0,
-        t / T_steps if T_steps > 0 else 0
-    ])
+def construct_state(S, t, target_values, N):
+    """State: [S_norm, avg_target, t_norm, target_0, target_1, ..., target_{N-1}]"""
+    is_intermediate = isinstance(target_values, (list, np.ndarray))
+    norm_factor = max_terminal_payoff if max_terminal_payoff > 0 else 1.0
+    
+    state_vec = np.zeros(3 + N)  # 3 base features + N target values
+    state_vec[0] = S / S0
+    state_vec[2] = t / T_steps
+    
+    if is_intermediate:
+        state_vec[1] = np.mean(target_values) / norm_factor
+        state_vec[3:3+N] = np.array(target_values) / norm_factor
+    else:
+        state_vec[1] = target_values / norm_factor
+    
+    return state_vec
 
-def compute_reward(hedge, target_value, binary_prices, is_terminal):
-    """Super-replication reward: strong shortfall penalty, weak excess penalty"""
+def compute_super_replication_reward(hedge, target_values, binary_prices, is_terminal, child_occurred=None):
+    """
+    SUPER-REPLICATION: Asymmetric penalties
+    - HUGE penalty for shortfall (underpayment)
+    - SMALL penalty for excess (overpayment)
+    - SMALL penalty for cost (efficiency)
+    """
     hedge = np.atleast_1d(hedge)
     cost = np.sum(hedge * binary_prices)
-    realized = np.sum(hedge)
     
-    shortfall = max(0, target_value - realized)
-    excess = max(0, realized - target_value)
-    
-    normalized_shortfall = shortfall / max_terminal_payoff if max_terminal_payoff > 0 else shortfall
-    normalized_excess = excess / max_terminal_payoff if max_terminal_payoff > 0 else excess
-    
-    # Adaptive penalty for high-value states
-    if is_terminal and target_value > 30:
-        penalty_weight = 200
-    elif is_terminal:
-        penalty_weight = 100
+    if is_terminal:
+        # Terminal: single value
+        realized = hedge[0]
+        target = target_values
+        shortfall = max(0, target - realized)
+        excess = max(0, realized - target)
     else:
-        penalty_weight = 150
+        # Intermediate: check specific child or all
+        if child_occurred is not None:
+            # Training: specific child
+            realized = hedge[child_occurred]
+            target = target_values[child_occurred]
+            shortfall = max(0, target - realized)
+            excess = max(0, realized - target)
+        else:
+            # Evaluation: all N children
+            shortfalls = []
+            excesses = []
+            for i in range(len(target_values)):
+                realized_i = hedge[i]
+                target_i = target_values[i]
+                shortfalls.append(max(0, target_i - realized_i))
+                excesses.append(max(0, realized_i - target_i))
+            
+            shortfall = np.mean(shortfalls)
+            excess = np.mean(excesses)
     
-    # SUPER-REPLICATION: Heavy shortfall penalty, light excess penalty
-    reward = -(COST_WEIGHT * abs(cost) 
-               + penalty_weight * SHORTFALL_MULTIPLIER * normalized_shortfall**2
-               + penalty_weight * EXCESS_PENALTY * normalized_excess**2)
+    # Normalize
+    norm_factor = max_terminal_payoff if max_terminal_payoff > 0 else 1.0
+    normalized_shortfall = shortfall / norm_factor
+    normalized_excess = excess / norm_factor
     
-    reward = np.clip(reward, -10000, 0)
+    # ASYMMETRIC PENALTIES
+    reward = -(COST_WEIGHT * abs(cost)
+               + SHORTFALL_PENALTY * normalized_shortfall**2  # HUGE!
+               + EXCESS_PENALTY * normalized_excess**2)        # Small
     
-    return reward, cost, shortfall
+    return np.clip(reward, -100000000, 0), cost, shortfall, excess
 
 # ============================================================
 # TRAINING LOOP
 # ============================================================
-def train_universal_agent_with_lsmc():
-    print("\n" + "="*60)
-    print("ITERATIVE LSMC + UNIVERSAL AGENT TRAINING")
-    print(f"MODE: SUPER-REPLICATION (N={N}-NOMIAL)")
-    print("="*60)
-    
-    simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps, dt)
+def train_super_replication_agent():
+    simulator = NnomialPathSimulator(S0, moves, probs, T_steps, dt)
     lsmc_estimator = LSMCEstimator(polynomial_degree=POLYNOMIAL_DEGREE, alpha=REGRESSION_ALPHA)
     
-    state_dim = 3
-    action_dim = N  # N binaries for N-nomial (will use 1 for terminals)
+    # State: 3 base + N targets, Action: N binaries
+    state_dim = 3 + N
+    action_dim = N
+    agent = UniversalDDPGAgent(state_dim=state_dim, action_dim=action_dim, hidden_dim=HIDDEN_DIM)
     
-    agent = UniversalDDPGAgent(state_dim, action_dim, HIDDEN_DIM)
-    
-    best_total_shortfall = float('inf')
+    best_avg_shortfall = float('inf')
     
     for iteration in range(NUM_ITERATIONS):
-        print(f"\n{'='*60}")
-        print(f"ITERATION {iteration + 1}/{NUM_ITERATIONS}")
-        print(f"{'='*60}")
+        print(f"\n{'='*60}\nITERATION {iteration + 1}/{NUM_ITERATIONS}\n{'='*60}")
         
-        # PHASE 1: LSMC
-        print(f"\nPhase 1: Simulating {NUM_SIMULATIONS} paths and running LSMC...")
         paths = simulator.simulate_paths(NUM_SIMULATIONS)
         paths = lsmc_estimator.estimate_continuation_values(paths, r, dt)
         
-        # PHASE 2: TRAIN AGENT
-        print(f"\nPhase 2: Training universal agent...")
+        print(f"\nTraining super-replication agent...")
         episodes_this_iter = TOTAL_EPISODES // NUM_ITERATIONS
         
         reward_history = []
         
         for episode in range(episodes_this_iter):
-            path_idx = np.random.randint(0, len(paths))
-            time_idx = np.random.randint(0, T_steps + 1)
+            path_idx = np.random.randint(len(paths))
+            time_idx = np.random.randint(T_steps + 1)
             
-            sampled_state = paths[path_idx][time_idx]
-            S = sampled_state['S']
-            t = sampled_state['t']
-            
+            sampled_node = paths[path_idx][time_idx]
+            S, t = sampled_node['S'], sampled_node['t']
             is_terminal = (t == T_steps)
             
             if is_terminal:
-                target = sampled_state['payoff']
-                n_binaries = 1
+                target = sampled_node['payoff']
                 prices = [np.exp(-r * dt)]
+                child_occurred = None
             else:
-                target = sampled_state['value']
-                n_binaries = N  # N-nomial has N binaries
-                prices = [np.exp(-r * dt)] * N
+                target = lsmc_estimator.predict_child_continuation_values(S, t)
+                prices = [np.exp(-r * dt) * p for p in probs]
+                child_occurred = sampled_node['child_occurred']
             
-            state = construct_state(S, t, target)
+            state = construct_state(S, t, target, N)
             
-            noise_decay = max(0.1, 1.0 - episode / episodes_this_iter)
-            add_noise = episode < episodes_this_iter * 0.8
+            noise_decay = max(0.01, 1.0 - episode / episodes_this_iter)
+            add_noise = episode < episodes_this_iter * 0.95
             action = agent.select_action(state, add_noise=add_noise, noise_decay=noise_decay)
             
+            action_used = action[:1] if is_terminal else action[:N]
+            
+            # Multi-child training
             if is_terminal:
-                action_used = np.maximum(action[:1], 0)
-                prices_used = prices[:1]
+                reward, _, _, _ = compute_super_replication_reward(
+                    action_used, target, prices, True, None
+                )
+                agent.replay_buffer.push(state, action, reward, state, False)
+                reward_history.append(reward)
             else:
-                action_used = action[:n_binaries]
-                prices_used = prices[:n_binaries]
-            
-            reward, cost, shortfall = compute_reward(action_used, target, prices_used, is_terminal)
-            
-            agent.replay_buffer.push(state, action, reward, state, True)
+                for child_idx in range(N):
+                    reward, _, _, _ = compute_super_replication_reward(
+                        action_used, target, prices, False, child_idx
+                    )
+                    agent.replay_buffer.push(state, action, reward, state, False)
+                    reward_history.append(reward)
             
             if len(agent.replay_buffer) >= BATCH_SIZE:
                 agent.update(BATCH_SIZE)
             
-            reward_history.append(reward)
-            
-            if (episode + 1) % 5000 == 0:
-                avg_reward = np.mean(reward_history[-1000:])
-                print(f"  Episode {episode+1}/{episodes_this_iter}: Avg Reward={avg_reward:.2f}")
+            if (episode + 1) % (episodes_this_iter // 8) == 0:
+                avg_reward = np.mean(reward_history[-1000:]) if len(reward_history) >= 1000 else np.mean(reward_history)
+                print(f"  Episode {episode+1}/{episodes_this_iter}: Avg Reward={avg_reward:.1f}")
+
+        print(f"\nEvaluating super-replication performance...")
         
-        # PHASE 3: EVALUATE
-        print(f"\nPhase 3: Evaluating agent performance...")
-        
-        total_shortfall = 0
-        total_cost = 0
-        num_states = 0
+        total_shortfall, total_excess, num_evals = 0, 0, 0
         
         for path in paths[:1000]:
-            for state_info in path:
-                S = state_info['S']
-                t = state_info['t']
-                is_terminal = (t == T_steps)
+            for node in path:
+                S_eval, t_eval = node['S'], node['t']
+                is_terminal_eval = (t_eval == T_steps)
                 
-                if is_terminal:
-                    target = state_info['payoff']
-                    n_binaries = 1
-                    prices = [np.exp(-r * dt)]
+                if is_terminal_eval:
+                    target_eval = node['payoff']
+                    prices_eval = [np.exp(-r * dt)]
                 else:
-                    target = state_info['value']
-                    n_binaries = N
-                    prices = [np.exp(-r * dt)] * N
+                    target_eval = lsmc_estimator.predict_child_continuation_values(S_eval, t_eval)
+                    prices_eval = [np.exp(-r * dt) * p for p in probs]
+
+                state_eval = construct_state(S_eval, t_eval, target_eval, N)
+                action_eval = agent.select_action(state_eval, add_noise=False)
+                action_used_eval = action_eval[:1] if is_terminal_eval else action_eval[:N]
                 
-                state = construct_state(S, t, target)
-                action = agent.select_action(state, add_noise=False)
-                
-                if is_terminal:
-                    action_used = np.maximum(action[:1], 0)
-                    prices_used = prices[:1]
-                else:
-                    action_used = action[:n_binaries]
-                    prices_used = prices[:n_binaries]
-                
-                _, cost, shortfall = compute_reward(action_used, target, prices_used, is_terminal)
+                _, _, shortfall, excess = compute_super_replication_reward(
+                    action_used_eval, target_eval, prices_eval, is_terminal_eval, None
+                )
                 
                 total_shortfall += shortfall
-                total_cost += cost
-                num_states += 1
-        
-        avg_shortfall = total_shortfall / num_states
-        avg_cost = total_cost / num_states
+                total_excess += excess
+                num_evals += 1
+
+        avg_shortfall = total_shortfall / num_evals
+        avg_excess = total_excess / num_evals
         
         print(f"\nIteration {iteration + 1} Results:")
-        print(f"  Avg Shortfall: {avg_shortfall:.6f}")
-        print(f"  Avg Cost: ${avg_cost:.4f}")
-        print(f"  Total Shortfall (1000 paths): {total_shortfall:.6f}")
+        print(f"  Avg Shortfall: {avg_shortfall:.6f} (MUST BE NEAR 0!)")
+        print(f"  Avg Excess: {avg_excess:.6f} (minimize but acceptable)")
         
-        if total_shortfall < best_total_shortfall:
-            best_total_shortfall = total_shortfall
-            print(f"  ✓ New best shortfall!")
+        if avg_shortfall < best_avg_shortfall:
+            best_avg_shortfall = avg_shortfall
+            print(f"  ✓ NEW BEST!")
         
-        # More lenient threshold for higher N
-        success_threshold = 0.5 + (N - 2) * 0.2  # 0.5 for N=2, 0.7 for N=3, 0.9 for N=4
-        if avg_shortfall < success_threshold:
-            print(f"\n🎉 SUCCESS! Avg Shortfall < {success_threshold} at iteration {iteration + 1}")
+        if avg_shortfall < 0.1:
+            print(f"\n🎉 SUCCESS! Avg Shortfall < 0.1 at iteration {iteration + 1}")
             break
-    
-    print("\n" + "="*60)
-    print("TRAINING COMPLETE!")
-    print(f"Best Total Shortfall: {best_total_shortfall:.6f}")
-    print("="*60)
-    
+            
+    print(f"\n{'='*60}\nTRAINING COMPLETE!\n{'='*60}")
+    print(f"Best Avg Shortfall: {best_avg_shortfall:.6f}")
     return agent, lsmc_estimator
 
 # ============================================================
 # MAIN EXECUTION
 # ============================================================
-agent, lsmc_estimator = train_universal_agent_with_lsmc()
+agent, lsmc_estimator = train_super_replication_agent()
 
 # ============================================================
 # FINAL EVALUATION
 # ============================================================
-print("\n" + "="*60)
-print("FINAL EVALUATION - SUPER-REPLICATION")
+print("\n" + "="*60 + "\nFINAL EVALUATION - SUPER-REPLICATION\n" + "="*60)
+
+# Generate test states at t=0, t=1, t=2
+test_states = [(S0, 0)]
+
+# Add some representative t=1 states
+for i in range(min(N, 5)):  # Test up to 5 states at t=1
+    test_states.append((S0 * moves[i], 1))
+
+# Add some representative t=2 states
+if T_steps >= 2:
+    for i in range(min(N, 3)):
+        for j in range(min(N, 3)):
+            test_states.append((S0 * moves[i] * moves[j], 2))
+
+print(f"\nEvaluating {len(test_states)} key states")
 print("="*60)
 
-# Generate test states based on N
-test_states = [(S0, 0)]  # Initial state
+success_count = 0
 
-# t=1 states
-for i in range(min(N, 4)):  # Show first 4 or N states, whichever is smaller
-    test_states.append((S0 * multipliers[i], 1))
-
-# t=2 states (if T>=2)
-if T_steps >= 2:
-    # Show some representative t=2 states
-    test_states.extend([
-        (S0 * multipliers[0] * multipliers[0], 2),  # Best case
-        (S0 * multipliers[0] * multipliers[-1], 2), # Mixed
-        (S0 * multipliers[-1] * multipliers[-1], 2) # Worst case
-    ])
-
-print("\nAgent Performance at Key States:")
-print("-" * 80)
 for S, t in test_states:
     is_terminal = (t == T_steps)
     
     if is_terminal:
         target = max(S - K, 0)
-        n_binaries = 1
         prices = [np.exp(-r * dt)]
     else:
-        target = lsmc_estimator.predict_continuation_value(S, t)
-        n_binaries = N
-        prices = [np.exp(-r * dt)] * N
+        target = lsmc_estimator.predict_child_continuation_values(S, t)
+        prices = [np.exp(-r * dt) * p for p in probs]
     
-    state = construct_state(S, t, target)
+    state = construct_state(S, t, target, N)
     action = agent.select_action(state, add_noise=False)
+    action_used = action[:1] if is_terminal else action[:N]
+    
+    _, cost, shortfall, excess = compute_super_replication_reward(
+        action_used, target, prices, is_terminal, None
+    )
+    
+    is_success = shortfall < 0.1
+    if is_success:
+        success_count += 1
+    
+    print(f"\nt={t} | S=${S:.2f}")
+    print("-"*60)
     
     if is_terminal:
-        action_used = np.maximum(action[:1], 0)
-        prices_used = prices[:1]
+        print(f"LSMC Target: ${target:.4f}")
+        print(f"Super-Hedge (# of binaries): {action_used[0]:+.4f}")
+        print(f"Shortfall: ${shortfall:.4f}, Excess: ${excess:.4f}")
     else:
-        action_used = action[:n_binaries]
-        prices_used = prices[:n_binaries]
+        print(f"LSMC Targets: {[f'${v:.2f}' for v in target]}")
+        print(f"Super-Hedge: {[f'{h:+.2f}' for h in action_used]}")
+        print(f"Avg Shortfall: ${shortfall:.4f}, Avg Excess: ${excess:.4f}")
     
-    _, cost, shortfall = compute_reward(action_used, target, prices_used, is_terminal)
-    realized = np.sum(action_used)
-    excess = max(0, realized - target)
-    
-    print(f"\nState: S=${S:.2f}, t={t}")
-    print(f"  Target: ${target:.4f}")
-    print(f"  Hedge: {action_used}")
-    print(f"  Realized Value: ${realized:.4f}")
-    print(f"  Cost: ${cost:.4f}")
-    print(f"  Shortfall: {shortfall:.6f}")
-    print(f"  Excess: {excess:.4f}")
-    if SUPER_REPLICATION:
-        status = "✓ COVERED" if shortfall < 0.01 else "✗ UNCOVERED"
-        print(f"  Status: {status}")
+    print(f"Total Cost: ${cost:+.4f}")
+    print("-"*60)
+    if is_success:
+        print("✓ Super-replication successful (no shortfall)")
+    else:
+        print("✗ FAILED - shortfall detected!")
+    print("="*60)
 
 print("\n" + "="*60)
-print("SUMMARY:")
-print(f"N={N}-nomial, T={T_steps}")
-print(f"Super-Replication: {SUPER_REPLICATION}")
-print(f"LSMC + Universal Agent Framework")
+print(f"SUCCESS RATE: {success_count}/{len(test_states)} ({100*success_count/len(test_states):.1f}%)")
 print("="*60)
-print("DONE!")
+print("\nFINANCIAL MATH - SUPER-REPLICATION:")
+print(f"• Complete market: {N} states → {N} binaries")
+print(f"• Goal: Minimum cost hedge that NEVER underpays")
+print(f"• Asymmetric penalties enforce super-replication")
+print("="*60)
+print("\nThe numbers represent the minimum # of binary contracts")
+print("needed to ALWAYS cover the option payoff (upper bound).")
 print("="*60)
