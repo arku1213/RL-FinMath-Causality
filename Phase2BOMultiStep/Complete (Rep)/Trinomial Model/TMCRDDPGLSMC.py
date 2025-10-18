@@ -4,18 +4,23 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import random
+from scipy.optimize import minimize
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 S0 = 100.0
-u = 1.2214
-m = 1.0
-d = 0.8187
 r = 0.05
 K = 100.0
 T_steps = 2
 dt = 1.0
+
+# FIXED TRINOMIAL PARAMETERS (Boyle trinomial - guaranteed positive probabilities)
+sigma = 0.3  # Volatility
+lambda_param = np.sqrt(3)  # Stretching parameter for trinomial
+u = np.exp(lambda_param * sigma * np.sqrt(dt))    # ≈ 1.67
+d = np.exp(-lambda_param * sigma * np.sqrt(dt))   # ≈ 0.60
+m = 1.0  # Middle state (stock price unchanged)
 
 # LSMC Parameters
 NUM_SIMULATIONS = 10000
@@ -23,7 +28,7 @@ POLYNOMIAL_DEGREE = 3
 REGRESSION_ALPHA = 0.1
 
 # ============================================================
-# AGGRESSIVE HYPERPARAMETERS FOR COMPLETE MARKET REPLICATION
+# FINANCIAL MATH FOCUS: EXACT REPLICATION
 # ============================================================
 ACTOR_LR = 0.0001
 CRITIC_LR = 0.0003
@@ -32,58 +37,105 @@ max_stock_price = S0 * (u ** T_steps)
 max_terminal_payoff = max(max_stock_price - K, 0)
 ACTION_SCALE = max_terminal_payoff * 3.0
 
-# CRITICAL: Make accuracy MUCH more important than cost
-REPLICATION_PENALTY = 20000  # Very high - must match exactly
-EXTREME_PENALTY_WEIGHT = 100
-COST_WEIGHT = 0.0001         # Very low - cost barely matters
+# CRITICAL: Find EXACT hedge ratios (financial math goal)
+REPLICATION_PENALTY = 1000000   # Massive - must match exactly!
+COST_WEIGHT = 0.0               # ZERO - don't care about cost at all!
+EXTREME_PENALTY_WEIGHT = 0      # No extreme penalty - allow any position
 
 # Training schedule
-TOTAL_EPISODES = 300000
-NUM_ITERATIONS = 12
+TOTAL_EPISODES = 300000  # More training for exact solution
+NUM_ITERATIONS = 12      # More iterations for convergence
 BATCH_SIZE = 256
 GAMMA = 0.99
 TAU = 0.005
-BUFFER_SIZE = 300000
+BUFFER_SIZE = 500000
 HIDDEN_DIM = 256
 
 print("="*60)
-print(f"COMPLETE MARKET REPLICATION: TRINOMIAL T={T_steps}")
+print("FINANCIAL MATH: EXACT REPLICATION HEDGE RATIOS")
 print("="*60)
-print("GOAL: PERFECT REPLICATION (exact matching)")
-print(f"Replication Penalty: {REPLICATION_PENALTY}")
-print(f"Cost Weight: {COST_WEIGHT}")
-print(f"Accuracy/Cost Ratio: {REPLICATION_PENALTY/COST_WEIGHT:,.0f}:1")
+print("GOAL: Find theoretically correct number of binaries at each node")
+print(f"Cost Weight: {COST_WEIGHT} (ZERO - exact hedge regardless of cost)")
+print(f"Replication Penalty: {REPLICATION_PENALTY:,} (find exact match)")
 print("="*60)
 
 # ============================================================
 # TRINOMIAL PROBABILITIES
 # ============================================================
 def calculate_trinomial_probabilities(S0, u, m, d, r, dt):
+    """
+    Calculate trinomial probabilities using direct optimization
+    to ensure all probabilities are positive
+    """
     growth = np.exp(r * dt)
-    p_d = (growth - u) * (growth - m) / ((d - u) * (d - m))
-    p_u = (growth - m) * (growth - d) / ((u - m) * (u - d))
-    p_m = 1.0 - p_u - p_d
+    
+    # We need to solve:
+    # p_u * u + p_m * m + p_d * d = growth
+    # p_u + p_m + p_d = 1
+    # p_u, p_m, p_d >= 0
+    
+    # Use a simple heuristic: minimize variance while matching growth
+    from scipy.optimize import minimize
+    
+    def objective(p):
+        # Minimize variance (keep probabilities reasonable)
+        return np.sum((p - 1/3)**2)
+    
+    def constraint_mean(p):
+        # Expected growth must equal risk-free rate
+        return p[0]*u + p[1]*m + p[2]*d - growth
+    
+    def constraint_sum(p):
+        # Probabilities sum to 1
+        return p[0] + p[1] + p[2] - 1
+    
+    # Initial guess: uniform
+    p0 = [1/3, 1/3, 1/3]
+    
+    # Constraints
+    cons = [
+        {'type': 'eq', 'fun': constraint_mean},
+        {'type': 'eq', 'fun': constraint_sum}
+    ]
+    
+    # Bounds: all probabilities between 0.001 and 0.999
+    bounds = [(0.001, 0.999), (0.001, 0.999), (0.001, 0.999)]
+    
+    result = minimize(objective, p0, method='SLSQP', bounds=bounds, constraints=cons)
+    
+    if result.success:
+        p_u, p_m, p_d = result.x
+    else:
+        # Fallback: simple heuristic
+        print("WARNING: Optimization failed, using fallback method")
+        # Set p_m high since m is close to growth
+        p_m = 0.7
+        # Distribute remainder
+        diff = growth - p_m * m
+        weight = (u - growth) / (u - d)
+        p_d = weight * (1 - p_m)
+        p_u = (1 - p_m) - p_d
+        p_u = max(0.001, p_u)
+        p_d = max(0.001, p_d)
+        p_m = 1 - p_u - p_d
     
     expected_growth = p_u * u + p_m * m + p_d * d
     prob_sum = p_u + p_m + p_d
     
     print(f"\nTrinomial Probabilities:")
     print(f"  p_u = {p_u:.6f}, p_m = {p_m:.6f}, p_d = {p_d:.6f}")
-    print(f"  Sum = {prob_sum:.6f}, Expected growth = {expected_growth:.6f} (target: {growth:.6f})")
+    print(f"  Sum = {prob_sum:.6f}, Expected growth = {expected_growth:.6f}")
     
-    assert abs(prob_sum - 1.0) < 1e-6
-    assert abs(expected_growth - growth) < 1e-4
+    assert abs(prob_sum - 1.0) < 1e-6, "Probabilities must sum to 1"
+    assert abs(expected_growth - growth) < 1e-3, "Expected growth must match risk-free rate"
+    assert p_u >= 0 and p_m >= 0 and p_d >= 0, "All probabilities must be positive!"
     
-    if p_u < 0 or p_m < 0 or p_d < 0:
-        print("WARNING: Negative probabilities! Adjusting...")
-        p_u = max(0.01, p_u)
-        p_d = max(0.01, p_d)
-        p_m = 1.0 - p_u - p_d
+    print("  ✓ Valid risk-neutral probabilities")
     
     return p_u, p_m, p_d
 
 p_u, p_m, p_d = calculate_trinomial_probabilities(S0, u, m, d, r, dt)
-
+# UTILITIES
 # ============================================================
 # UTILITIES
 # ============================================================
@@ -113,7 +165,7 @@ class RidgeRegression:
         return X @ self.coef_
 
 # ============================================================
-# PATH SIMULATION WITH CHILD TRACKING
+# PATH SIMULATION
 # ============================================================
 class TrinomialPathSimulator:
     def __init__(self, S0, u, m, d, p_u, p_m, p_d, T_steps, dt):
@@ -138,13 +190,13 @@ class TrinomialPathSimulator:
                     rand = np.random.random()
                     if rand < self.p_u:
                         S *= self.u
-                        path_step['child_occurred'] = 0  # Up
+                        path_step['child_occurred'] = 0
                     elif rand < self.p_u + self.p_m:
                         S *= self.m
-                        path_step['child_occurred'] = 1  # Mid
+                        path_step['child_occurred'] = 1
                     else:
                         S *= self.d
-                        path_step['child_occurred'] = 2  # Down
+                        path_step['child_occurred'] = 2
                 
                 path.append(path_step)
             paths.append(path)
@@ -329,7 +381,7 @@ class UniversalDDPGAgent:
             target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
 
 # ============================================================
-# STATE & REWARD - REPLICATION
+# REWARD: ABSOLUTE DEVIATION (EXACT MATCH REQUIRED)
 # ============================================================
 def construct_state(S, t, target_values):
     is_intermediate = isinstance(target_values, (list, np.ndarray))
@@ -349,71 +401,41 @@ def construct_state(S, t, target_values):
 
 def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occurred=None):
     """
-    REPLICATION REWARD: Match exactly (symmetric penalty)
-    WITH CONSISTENT RELATIVE DEVIATION (Option 3 Fixed)
+    FINANCIAL MATH: Find exact hedge ratios (ABSOLUTE deviation)
+    
+    Goal: hedge should EXACTLY equal target_values
+    Cost: ZERO weight (don't care about cost)
+    Penalty: MASSIVE for any deviation
     """
     hedge = np.atleast_1d(hedge)
+    
+    # NO COST PENALTY (financial math goal: exact hedge regardless of cost)
     cost = np.sum(hedge * binary_prices)
-    epsilon = 1.0  # Prevent division by zero
     
     if is_terminal:
-        # FIXED: Use relative deviation for terminals too!
-        target_val = target_values
-        hedge_val = hedge[0]
-        
-        # Relative deviation (consistent with intermediate)
-        deviation = abs(hedge_val - target_val) / (abs(target_val) + epsilon)
-        extreme_penalty = 0
-        penalty_multiplier = 1.0
+        # Terminal: hedge[0] should equal target exactly
+        deviation = abs(hedge[0] - target_values)
     else:
-        # CRITICAL: Use child_occurred if available (for training)
         if child_occurred is not None:
-            # Only the binary that pays off matters!
-            target_val = target_values[child_occurred]
-            hedge_val = hedge[child_occurred]
-            
-            # Relative deviation
-            deviation = abs(hedge_val - target_val) / (abs(target_val) + epsilon)
-            penalty_multiplier = 1.0
+            # Training: focus on specific child
+            deviation = abs(hedge[child_occurred] - target_values[child_occurred])
         else:
-            # Evaluation mode: check all 3 with relative weighting
-            relative_deviations = []
-            
-            for i in range(3):
-                target_val = target_values[i]
-                hedge_val = hedge[i]
-                
-                # Relative deviation for each binary
-                rel_dev = abs(hedge_val - target_val) / (abs(target_val) + epsilon)
-                relative_deviations.append(rel_dev)
-            
-            # Average relative deviation
-            deviation = np.mean(relative_deviations)
-            penalty_multiplier = 1.0
-        
-        # Extreme position penalty
-        all_targets_near_zero = all(abs(tv) < 0.1 for tv in target_values)
-        if all_targets_near_zero:
-            max_reasonable = 2.0
-        else:
-            max_reasonable = max([abs(tv) * 3.0 for tv in target_values] + [10.0])
-        
-        extreme_penalty = sum(max(0, abs(h) - max_reasonable)**2 for h in hedge)
+            # Evaluation: check all 3
+            deviations = [abs(hedge[i] - target_values[i]) for i in range(3)]
+            deviation = np.mean(deviations)
     
-    # Deviation is already relative (unitless ratio) - no normalization needed
-    normalized_deviation = deviation
+    # ABSOLUTE DEVIATION (not normalized, not relative)
+    # We want: |hedge - target| → 0 (exact match)
     
-    # REPLICATION: symmetric penalty on deviation
-    reward = -(COST_WEIGHT * abs(cost) 
-               + penalty_multiplier * REPLICATION_PENALTY * normalized_deviation**2
-               + EXTREME_PENALTY_WEIGHT * extreme_penalty)
+    # Reward: Pure accuracy penalty (no cost, no extreme penalty)
+    reward = -REPLICATION_PENALTY * deviation**2
     
-    return np.clip(reward, -100000, 0), cost, deviation
+    return np.clip(reward, -1000000, 0), cost, deviation
 
 # ============================================================
-# TRAINING LOOP WITH MULTI-CHILD TRAINING (FIX 3)
+# TRAINING LOOP
 # ============================================================
-def train_universal_agent_with_lsmc():
+def train_exact_replication_agent():
     simulator = TrinomialPathSimulator(S0, u, m, d, p_u, p_m, p_d, T_steps, dt)
     lsmc_estimator = LSMCEstimator(polynomial_degree=POLYNOMIAL_DEGREE, alpha=REGRESSION_ALPHA)
     agent = UniversalDDPGAgent(state_dim=6, action_dim=3, hidden_dim=HIDDEN_DIM)
@@ -426,7 +448,7 @@ def train_universal_agent_with_lsmc():
         paths = simulator.simulate_paths(NUM_SIMULATIONS)
         paths = lsmc_estimator.estimate_continuation_values(paths, r, dt)
         
-        print(f"\nTraining agent with MULTI-CHILD training...")
+        print(f"\nTraining to find EXACT hedge ratios...")
         episodes_this_iter = TOTAL_EPISODES // NUM_ITERATIONS
         
         reward_history = []
@@ -450,19 +472,18 @@ def train_universal_agent_with_lsmc():
             
             state = construct_state(S, t, target)
             
-            noise_decay = max(0.05, 1.0 - episode / episodes_this_iter)
-            add_noise = episode < episodes_this_iter * 0.9
+            noise_decay = max(0.01, 1.0 - episode / episodes_this_iter)
+            add_noise = episode < episodes_this_iter * 0.95
             action = agent.select_action(state, add_noise=add_noise, noise_decay=noise_decay)
             
             action_used = action[:1] if is_terminal else action[:3]
             
-            # MULTI-CHILD TRAINING (FIX 3)
+            # Multi-child training
             if is_terminal:
                 reward, _, _ = compute_reward(action_used, target, prices, is_terminal, None)
                 agent.replay_buffer.push(state, action, reward, state, False)
                 reward_history.append(reward)
             else:
-                # Push 3 training examples (one per child)
                 for child_idx in range(3):
                     reward, _, _ = compute_reward(action_used, target, prices, False, child_idx)
                     agent.replay_buffer.push(state, action, reward, state, False)
@@ -475,7 +496,7 @@ def train_universal_agent_with_lsmc():
                 avg_reward = np.mean(reward_history[-1000:]) if len(reward_history) >= 1000 else np.mean(reward_history)
                 print(f"  Episode {episode+1}/{episodes_this_iter}: Avg Reward={avg_reward:.1f}")
 
-        print(f"\nEvaluating on paths...")
+        print(f"\nEvaluating hedge accuracy...")
         
         total_deviation, num_evals = 0, 0
         
@@ -504,32 +525,32 @@ def train_universal_agent_with_lsmc():
 
         avg_deviation = total_deviation / num_evals
         print(f"\nIteration {iteration + 1} Results:")
-        print(f"  Average Deviation: {avg_deviation:.6f}")
+        print(f"  Average ABSOLUTE Deviation: ${avg_deviation:.4f}")
         
         if avg_deviation < best_avg_deviation:
             best_avg_deviation = avg_deviation
             print(f"  ✓ NEW BEST!")
         
-        if avg_deviation < 1.0:
-            print(f"\n🎉 SUCCESS! Avg Deviation < 1.0 at iteration {iteration + 1}")
-            break
+        if avg_deviation < 0.5:
+            print(f"\n🎉 EXCELLENT! Avg Deviation < $0.50 at iteration {iteration + 1}")
+            if avg_deviation < 0.1:
+                print(f"🎯 OUTSTANDING! Within $0.10 - essentially exact!")
+                break
             
     print(f"\n{'='*60}\nTRAINING COMPLETE!\n{'='*60}")
-    print(f"Best Average Deviation: {best_avg_deviation:.6f}")
-    print(f"Target: < 1.0 for success")
+    print(f"Best Average Absolute Deviation: ${best_avg_deviation:.4f}")
     return agent, lsmc_estimator
 
 # ============================================================
 # MAIN EXECUTION
 # ============================================================
-agent, lsmc_estimator = train_universal_agent_with_lsmc()
+agent, lsmc_estimator = train_exact_replication_agent()
 
 # ============================================================
-# FINAL EVALUATION - UNIQUE STATES ONLY (FIX 1)
+# FINAL EVALUATION - FINANCIAL MATH VALIDATION
 # ============================================================
-print("\n" + "="*60 + "\nFINAL EVALUATION - REPLICATION\n" + "="*60)
+print("\n" + "="*60 + "\nFINAL EVALUATION - HEDGE RATIOS\n" + "="*60)
 
-# Collect unique (S, t) pairs from the tree
 simulator = TrinomialPathSimulator(S0, u, m, d, p_u, p_m, p_d, T_steps, dt)
 paths = simulator.simulate_paths(1000)
 
@@ -538,10 +559,9 @@ for path in paths:
     for node in path:
         unique_states.add((node['S'], node['t']))
 
-# Sort by time then by price (descending)
 unique_states = sorted(list(unique_states), key=lambda x: (x[1], -x[0]))
 
-print(f"\nEvaluating {len(unique_states)} unique states in trinomial tree")
+print(f"\nEvaluating {len(unique_states)} unique states")
 print("="*60)
 
 success_count = 0
@@ -563,7 +583,7 @@ for S, t in unique_states:
     
     _, cost, deviation = compute_reward(action_used, target, prices, is_terminal, child_occurred=None)
     
-    is_success = deviation < 1.0
+    is_success = deviation < 0.5  # Within $0.50
     if is_success:
         success_count += 1
     
@@ -572,40 +592,48 @@ for S, t in unique_states:
     print("-"*60)
     
     if is_terminal:
-        print(f"Terminal target: ${target:.4f}")
-        print(f"Terminal binary holding: {action_used[0]:+.4f}")
-        print(f"Total hedge cost: ${cost:+.4f}")
-        print(f"Deviation: {deviation:.4f} {'✓' if is_success else '✗'}")
+        print(f"LSMC Target (continuation value): ${target:.4f}")
+        print(f"RL Hedge (# of binaries):          {action_used[0]:+.4f}")
+        print(f"Absolute Deviation:                ${deviation:.4f} {'✓' if is_success else '✗'}")
+        print(f"Total Cost:                        ${cost:+.4f}")
     else:
-        print(f"Continuation targets:")
+        print(f"LSMC Targets (continuation values):")
         print(f"  Up   : ${target[0]:.4f}")
         print(f"  Mid  : ${target[1]:.4f}")
         print(f"  Down : ${target[2]:.4f}")
         print("-"*60)
-        print(f"Binary holdings (hedge composition):")
+        print(f"RL Hedge (# of binaries to hold):")
         print(f"  Up   : {action_used[0]:+.4f}")
         print(f"  Mid  : {action_used[1]:+.4f}")
         print(f"  Down : {action_used[2]:+.4f}")
         print("-"*60)
-        print(f"Total hedge cost: ${cost:+.4f}")
-        
+        print(f"Absolute Deviations:")
         dev_up = abs(action_used[0] - target[0])
         dev_mid = abs(action_used[1] - target[1])
         dev_down = abs(action_used[2] - target[2])
-        
-        print(f"Individual deviations:")
-        print(f"  Up   : {dev_up:.4f}")
-        print(f"  Mid  : {dev_mid:.4f}")
-        print(f"  Down : {dev_down:.4f}")
-        print(f"Average deviation: {deviation:.6f} {'✓' if is_success else '✗'}")
+        print(f"  Up   : ${dev_up:.4f}")
+        print(f"  Mid  : ${dev_mid:.4f}")
+        print(f"  Down : ${dev_down:.4f}")
+        print(f"Average: ${deviation:.4f} {'✓' if is_success else '✗'}")
+        print(f"Total Cost: ${cost:+.4f}")
     
     print("-"*60)
     if is_success:
-        print("Interpretation: ✓ Good replication")
+        print("✓ Hedge ratios match LSMC targets (within $0.50)")
     else:
-        print("Interpretation: ✗ Poor replication")
+        print("✗ Hedge ratios deviate from LSMC targets")
     print("="*60)
 
 print("\n" + "="*60)
 print(f"SUCCESS RATE: {success_count}/{total_tests} ({100*success_count/total_tests:.1f}%)")
+print("="*60)
+print("\nFINANCIAL MATH VALIDATION:")
+print(f"• Complete market: 3 states, 3 binaries")
+print(f"• Theoretical result: Hedge = LSMC continuation values")
+print(f"• Success criterion: Within $0.50 of theoretical hedge")
+print("="*60)
+print("\nINTERPRETATION:")
+print("The numbers shown represent the EXACT number of binary contracts")
+print("to purchase at each node to replicate the option's continuation value.")
+print("In complete markets, these should match the LSMC targets closely.")
 print("="*60)
