@@ -30,20 +30,20 @@ REGRESSION_ALPHA = 0.1
 # ============================================================
 # FINANCIAL MATH FOCUS: EXACT REPLICATION
 # ============================================================
-ACTOR_LR = 0.0001
+ACTOR_LR = 0.00005
 CRITIC_LR = 0.0003
 
 max_stock_price = S0 * (u ** T_steps)
 max_terminal_payoff = max(max_stock_price - K, 0)
-ACTION_SCALE = max_terminal_payoff * 3.0
+ACTION_SCALE = max_terminal_payoff * 10.0
 
 # CRITICAL: Find EXACT hedge ratios (financial math goal)
-REPLICATION_PENALTY = 1000000   # Massive - must match exactly!
+REPLICATION_PENALTY = 100000000   # Massive - must match exactly!
 COST_WEIGHT = 0.0               # ZERO - don't care about cost at all!
 EXTREME_PENALTY_WEIGHT = 0      # No extreme penalty - allow any position
 
 # Training schedule
-TOTAL_EPISODES = 300000  # More training for exact solution
+TOTAL_EPISODES = 500000  # More training for exact solution
 NUM_ITERATIONS = 12      # More iterations for convergence
 BATCH_SIZE = 256
 GAMMA = 0.99

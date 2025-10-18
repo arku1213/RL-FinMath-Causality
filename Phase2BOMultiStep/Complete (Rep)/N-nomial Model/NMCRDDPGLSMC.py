@@ -4,8 +4,7 @@ import torch.optim as optim
 import numpy as np
 from collections import deque
 import random
-import math
-from scipy.optimize import linprog
+from scipy.optimize import minimize
 
 # ============================================================
 # CONFIGURATION
@@ -13,14 +12,14 @@ from scipy.optimize import linprog
 S0 = 100.0
 r = 0.05
 K = 100.0
-T_steps = 2
+T_steps = 3
 dt = 1.0
 
 # N-NOMIAL PARAMETER - CHANGE THIS!
-N = 4  # Number of states (2=binomial, 3=trinomial, 4=quadrinomial, 5=pentanomial, etc.)
+N = 5  # Number of states (3=trinomial, 4=quadrinomial, 5=pentanomial, etc.)
 
-# Stock price multipliers will be calculated automatically
-sigma = 0.2  # Volatility parameter
+# N-nomial tree parameters (will be calculated)
+sigma = 0.3  # Volatility
 
 # LSMC Parameters
 NUM_SIMULATIONS = 10000
@@ -28,136 +27,127 @@ POLYNOMIAL_DEGREE = 3
 REGRESSION_ALPHA = 0.1
 
 # ============================================================
-# AGGRESSIVE HYPERPARAMETERS FOR COMPLETE MARKET
+# FINANCIAL MATH FOCUS: EXACT REPLICATION
 # ============================================================
-ACTOR_LR = 0.0001
-CRITIC_LR = 0.0003
+ACTOR_LR = 0.00005   # Conservative learning
+CRITIC_LR = 0.00015
 
-# Action scale based on N
-max_stock_price = S0 * (np.exp(sigma * np.sqrt(2 * dt)) ** (T_steps))
+# Action scale and penalties (scale with N for stability)
+max_stock_price = S0 * (np.exp(sigma * np.sqrt(2 * dt)) ** T_steps)
 max_terminal_payoff = max(max_stock_price - K, 0)
-ACTION_SCALE = max_terminal_payoff * 3.0
+ACTION_SCALE = max_terminal_payoff * 10.0
 
-# CRITICAL: Make accuracy MUCH more important than cost
-REPLICATION_PENALTY = 10000
-EXTREME_PENALTY_WEIGHT = 100
-COST_WEIGHT = 0.0001
+# CRITICAL: Find EXACT hedge ratios (financial math goal)
+REPLICATION_PENALTY = 10000000 * N  # Scale with N!
+COST_WEIGHT = 0.0                    # ZERO - don't care about cost
+EXTREME_PENALTY_WEIGHT = 0           # No extreme penalty
 
-# Training schedule
-TOTAL_EPISODES = 300000
+# Training schedule (scale with N)
+TOTAL_EPISODES = 540000
 NUM_ITERATIONS = 12
 BATCH_SIZE = 256
 GAMMA = 0.99
 TAU = 0.005
-BUFFER_SIZE = 300000
+BUFFER_SIZE = 500000
 HIDDEN_DIM = 256
 
 print("="*60)
-print(f"LSMC + DDPG: {N}-NOMIAL (N={N}) T={T_steps}")
-print(f"MODE: COMPLETE MARKET - PERFECT REPLICATION")
+print(f"FINANCIAL MATH: N-NOMIAL EXACT REPLICATION (N={N})")
 print("="*60)
-print(f"States per node: {N}")
-print(f"Binaries per node: {N} (COMPLETE MARKET)")
-print(f"Replication Penalty: {REPLICATION_PENALTY}")
-print(f"Cost Weight: {COST_WEIGHT}")
-print(f"Accuracy/Cost Ratio: {REPLICATION_PENALTY/COST_WEIGHT:,.0f}:1")
+print("GOAL: Find theoretically correct number of binaries at each node")
+print(f"Market: {N} states → {N} binaries (COMPLETE)")
+print(f"Cost Weight: {COST_WEIGHT} (ZERO - exact hedge regardless of cost)")
+print(f"Replication Penalty: {REPLICATION_PENALTY:,} (scales with N)")
 print("="*60)
 
 # ============================================================
-# N-NOMIAL PARAMETERS - AUTOMATIC CALCULATION
+# N-NOMIAL PARAMETERS
 # ============================================================
 def calculate_n_nomial_parameters(N, S0, r, sigma, dt):
     """
-    Calculate stock price multipliers and risk-neutral probabilities
-    for N-nomial tree
+    Generate N-nomial tree parameters and probabilities
+    
+    Multipliers: Symmetrically spaced in log-space
+    Probabilities: Optimized to match risk-free rate with all positive
     """
     growth = np.exp(r * dt)
     
-    # Create N multipliers symmetrically spaced in log-space
+    # Generate multipliers symmetrically
     if N == 2:
-        # Binomial
         u = np.exp(sigma * np.sqrt(dt))
         multipliers = [u, 1/u]
     elif N == 3:
-        # Trinomial (CRR style)
-        u = np.exp(sigma * np.sqrt(2 * dt))
-        d = 1 / u
+        lambda_param = np.sqrt(3)
+        u = np.exp(lambda_param * sigma * np.sqrt(dt))
+        d = 1/u
         multipliers = [u, 1.0, d]
     else:
-        # General N-nomial: symmetric spacing
-        u = np.exp(sigma * np.sqrt(2 * dt))
-        d = 1 / u
+        # General N-nomial: symmetric spacing in log-space
+        lambda_param = np.sqrt(3)
+        u = np.exp(lambda_param * sigma * np.sqrt(dt))
+        d = 1/u
         
-        # Linearly spaced exponents from positive to negative
+        # Linearly spaced exponents
         exponents = np.linspace((N-1)/2, -(N-1)/2, N)
-        base = u
-        multipliers = [base ** exp for exp in exponents]
+        base_factor = (u / d) ** (1 / (N-1))
+        multipliers = [base_factor ** exp for exp in exponents]
     
     multipliers = np.array(multipliers)
     
-    # Calculate risk-neutral probabilities using linear programming
-    # We want: p_0*m_0 + p_1*m_1 + ... + p_{N-1}*m_{N-1} = growth
-    #          p_0 + p_1 + ... + p_{N-1} = 1
-    #          All p_i >= min_prob (for numerical stability)
+    # Optimize probabilities
+    def objective(p):
+        # Minimize variance (keep probabilities reasonable)
+        return np.sum((p - 1/N)**2)
     
-    min_prob = 0.001  # Minimum probability for stability
+    def constraint_mean(p):
+        # Expected growth must equal risk-free rate
+        return np.sum(p * multipliers) - growth
     
-    # Objective: minimize variance (or just find feasible solution)
-    # We'll use linprog to find probabilities
+    def constraint_sum(p):
+        # Probabilities sum to 1
+        return np.sum(p) - 1
     
-    # For N unknowns with 2 equality constraints, we have N-2 degrees of freedom
-    # We'll minimize sum of squared deviations from uniform
-    # This is equivalent to: minimize sum((p_i - 1/N)^2)
+    # Initial guess: uniform
+    p0 = np.ones(N) / N
     
-    # Use a simple heuristic: solve the system with additional constraint of minimum entropy
-    # For simplicity, we'll use least squares with constraints
+    # Constraints
+    cons = [
+        {'type': 'eq', 'fun': constraint_mean},
+        {'type': 'eq', 'fun': constraint_sum}
+    ]
     
-    # Set up: A_eq @ p = b_eq, bounds
-    A_eq = np.array([
-        np.ones(N),      # sum(p_i) = 1
-        multipliers      # sum(p_i * m_i) = growth
-    ])
-    b_eq = np.array([1.0, growth])
+    # Bounds: all probabilities between 0.001 and 0.999
+    bounds = [(0.001, 0.999) for _ in range(N)]
     
-    # Bounds: each probability between min_prob and 1-min_prob*(N-1)
-    bounds = [(min_prob, 1.0 - min_prob * (N-1)) for _ in range(N)]
-    
-    # Objective: minimize distance from uniform (for numerical stability)
-    c = np.ones(N)  # We'll solve a feasibility problem
-    
-    # Solve using linprog
-    result = linprog(c, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method='highs')
+    result = minimize(objective, p0, method='SLSQP', bounds=bounds, constraints=cons)
     
     if result.success:
         probabilities = result.x
     else:
-        print("WARNING: Could not solve for probabilities. Using fallback.")
-        # Fallback: approximate with uniform then adjust
+        print("WARNING: Optimization failed, using fallback method")
+        # Fallback: equal probabilities with slight adjustment
         probabilities = np.ones(N) / N
-        # Adjust to match growth constraint
-        current_growth = np.sum(probabilities * multipliers)
-        adjustment = (growth - current_growth) / np.sum(multipliers)
-        probabilities = probabilities + adjustment * multipliers / np.sum(multipliers**2)
-        probabilities = np.maximum(probabilities, min_prob)
+        # Adjust to match growth
+        diff = growth - np.sum(probabilities * multipliers)
+        probabilities[N//2] += diff / multipliers[N//2]
+        probabilities = np.maximum(probabilities, 0.001)
         probabilities = probabilities / np.sum(probabilities)
     
-    # Validate
-    prob_sum = np.sum(probabilities)
     expected_growth = np.sum(probabilities * multipliers)
+    prob_sum = np.sum(probabilities)
     
-    print(f"\n{N}-nomial Probabilities:")
+    print(f"\n{N}-nomial Configuration:")
+    print(f"Multipliers: {multipliers}")
+    print(f"Probabilities:")
     for i, (m, p) in enumerate(zip(multipliers, probabilities)):
-        print(f"  State {i}: multiplier={m:.6f}, probability={p:.6f}")
-    print(f"  Sum of probabilities = {prob_sum:.6f}")
-    print(f"  Expected growth = {expected_growth:.6f} (target: {growth:.6f})")
+        print(f"  State {i}: multiplier={m:.4f}, prob={p:.6f}")
+    print(f"Sum = {prob_sum:.6f}, Expected growth = {expected_growth:.6f}")
     
-    # Check for issues
-    if not (0.999 < prob_sum < 1.001):
-        print(f"WARNING: Probabilities don't sum to 1! Sum = {prob_sum}")
-    if not (0.99 * growth < expected_growth < 1.01 * growth):
-        print(f"WARNING: Expected growth mismatch!")
-    if np.any(probabilities < 0):
-        print(f"WARNING: Negative probabilities found!")
+    assert abs(prob_sum - 1.0) < 1e-6, "Probabilities must sum to 1"
+    assert abs(expected_growth - growth) < 1e-3, "Expected growth must match risk-free rate"
+    assert np.all(probabilities >= 0), "All probabilities must be positive!"
+    
+    print("  ✓ Valid risk-neutral probabilities")
     
     return multipliers, probabilities
 
@@ -192,7 +182,7 @@ class RidgeRegression:
         return X @ self.coef_
 
 # ============================================================
-# N-NOMIAL PATH SIMULATION WITH CHILD TRACKING
+# N-NOMIAL PATH SIMULATION
 # ============================================================
 class NnomialPathSimulator:
     def __init__(self, S0, multipliers, probabilities, T_steps, dt):
@@ -217,7 +207,6 @@ class NnomialPathSimulator:
                 }
                 
                 if t < self.T_steps:
-                    # Random transition based on probabilities
                     child_occurred = np.random.choice(self.N, p=self.probabilities)
                     S *= self.multipliers[child_occurred]
                     path_step['child_occurred'] = child_occurred
@@ -268,14 +257,12 @@ class LSMCEstimator:
     def predict_child_continuation_values(self, S, t):
         """Returns continuation values for all N children"""
         if t >= self.T_steps - 1:
-            # Terminal children
             return [max(S * m - K, 0) for m in multipliers]
         else:
-            # Use LSMC model
             return [self.predict_continuation_value(S * m, t + 1) for m in multipliers]
 
 # ============================================================
-# UNIVERSAL DDPG AGENT (GENERALIZED FOR N ACTIONS)
+# DDPG AGENT (GENERALIZED FOR N ACTIONS)
 # ============================================================
 class UniversalActor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim):
@@ -408,13 +395,10 @@ class UniversalDDPGAgent:
             target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
 
 # ============================================================
-# STATE & REWARD FOR N-NOMIAL
+# STATE & REWARD (GENERALIZED FOR N)
 # ============================================================
 def construct_state(S, t, target_values):
-    """
-    State vector: [S_norm, avg_target_norm, t_norm, target_0_norm, ..., target_{N-1}_norm]
-    Dimension: 3 + N
-    """
+    """State: [S_norm, avg_target, t_norm, target_0, ..., target_{N-1}]"""
     is_intermediate = isinstance(target_values, (list, np.ndarray))
     norm_factor = max_terminal_payoff if max_terminal_payoff > 0 else 1.0
     
@@ -432,56 +416,35 @@ def construct_state(S, t, target_values):
 
 def compute_reward(hedge, target_values, binary_prices, is_terminal, child_occurred=None):
     """
-    PERFECT REPLICATION REWARD for N-nomial complete market
+    FINANCIAL MATH: Find exact hedge ratios (ABSOLUTE deviation)
     """
     hedge = np.atleast_1d(hedge)
     cost = np.sum(hedge * binary_prices)
     
     if is_terminal:
         deviation = abs(hedge[0] - target_values)
-        extreme_penalty = 0
-        
-        if target_values > 40:
-            penalty_multiplier = 2.0
-        else:
-            penalty_multiplier = 1.0
     else:
-        # CRITICAL: Use child_occurred if available
         if child_occurred is not None:
-            # Only the binary that pays off matters!
+            # Training: focus on specific child
             deviation = abs(hedge[child_occurred] - target_values[child_occurred])
-            penalty_multiplier = 1.0
         else:
-            # Evaluation mode: check all N
+            # Evaluation: check all N
             deviations = [abs(hedge[i] - target_values[i]) for i in range(N)]
             deviation = np.mean(deviations)
-            penalty_multiplier = 1.0
-        
-        # Extreme position penalty
-        all_targets_near_zero = all(abs(tv) < 0.1 for tv in target_values)
-        if all_targets_near_zero:
-            max_reasonable = 2.0
-        else:
-            max_reasonable = max([abs(tv) * 3.0 for tv in target_values] + [10.0])
-        
-        extreme_penalty = sum(max(0, abs(h) - max_reasonable)**2 for h in hedge)
     
-    normalized_deviation = deviation / (max_terminal_payoff if max_terminal_payoff > 0 else 1.0)
+    # Pure accuracy penalty (no cost)
+    reward = -REPLICATION_PENALTY * deviation**2
     
-    reward = -(COST_WEIGHT * abs(cost) 
-               + penalty_multiplier * REPLICATION_PENALTY * normalized_deviation**2
-               + EXTREME_PENALTY_WEIGHT * extreme_penalty)
-    
-    return np.clip(reward, -100000, 0), cost, deviation
+    return np.clip(reward, -100000000, 0), cost, deviation
 
 # ============================================================
 # TRAINING LOOP
 # ============================================================
-def train_universal_agent_with_lsmc():
+def train_exact_replication_agent():
     simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps, dt)
     lsmc_estimator = LSMCEstimator(polynomial_degree=POLYNOMIAL_DEGREE, alpha=REGRESSION_ALPHA)
     
-    # State dim: 3 + N, Action dim: N
+    # State: 3+N, Action: N
     agent = UniversalDDPGAgent(state_dim=3+N, action_dim=N, hidden_dim=HIDDEN_DIM)
     
     best_avg_deviation = float('inf')
@@ -492,7 +455,7 @@ def train_universal_agent_with_lsmc():
         paths = simulator.simulate_paths(NUM_SIMULATIONS)
         paths = lsmc_estimator.estimate_continuation_values(paths, r, dt)
         
-        print(f"\nTraining agent for {N}-nomial complete market...")
+        print(f"\nTraining to find EXACT hedge ratios...")
         episodes_this_iter = TOTAL_EPISODES // NUM_ITERATIONS
         
         reward_history = []
@@ -516,20 +479,22 @@ def train_universal_agent_with_lsmc():
             
             state = construct_state(S, t, target)
             
-            noise_decay = max(0.05, 1.0 - episode / episodes_this_iter)
-            add_noise = episode < episodes_this_iter * 0.9
+            noise_decay = max(0.01, 1.0 - episode / episodes_this_iter)
+            add_noise = episode < episodes_this_iter * 0.95
             action = agent.select_action(state, add_noise=add_noise, noise_decay=noise_decay)
             
             action_used = action[:1] if is_terminal else action[:N]
             
-            reward, _, _ = compute_reward(action_used, target, prices, is_terminal, child_occurred)
-            reward_history.append(reward)
-            
-            for child_idx in range(N):
-                reward, _, _ = compute_reward(
-                    action_used, target, prices, is_terminal, child_idx
-                )
+            # Multi-child training
+            if is_terminal:
+                reward, _, _ = compute_reward(action_used, target, prices, is_terminal, None)
                 agent.replay_buffer.push(state, action, reward, state, False)
+                reward_history.append(reward)
+            else:
+                for child_idx in range(N):
+                    reward, _, _ = compute_reward(action_used, target, prices, False, child_idx)
+                    agent.replay_buffer.push(state, action, reward, state, False)
+                    reward_history.append(reward)
             
             if len(agent.replay_buffer) >= BATCH_SIZE:
                 agent.update(BATCH_SIZE)
@@ -538,7 +503,7 @@ def train_universal_agent_with_lsmc():
                 avg_reward = np.mean(reward_history[-1000:]) if len(reward_history) >= 1000 else np.mean(reward_history)
                 print(f"  Episode {episode+1}/{episodes_this_iter}: Avg Reward={avg_reward:.1f}")
 
-        print(f"\nEvaluating on paths...")
+        print(f"\nEvaluating hedge accuracy...")
         
         total_deviation, num_evals = 0, 0
         
@@ -567,100 +532,106 @@ def train_universal_agent_with_lsmc():
 
         avg_deviation = total_deviation / num_evals
         print(f"\nIteration {iteration + 1} Results:")
-        print(f"  Average Deviation: {avg_deviation:.6f}")
+        print(f"  Average ABSOLUTE Deviation: ${avg_deviation:.4f}")
         
         if avg_deviation < best_avg_deviation:
             best_avg_deviation = avg_deviation
             print(f"  ✓ NEW BEST!")
         
         if avg_deviation < 1.0:
-            print(f"\n🎉 SUCCESS! Avg Deviation < 1.0 at iteration {iteration + 1}")
-            break
+            print(f"\n🎉 EXCELLENT! Avg Deviation < $1.00 at iteration {iteration + 1}")
+            if avg_deviation < 0.5:
+                print(f"🎯 OUTSTANDING! Within $0.50 - essentially exact!")
+                break
             
     print(f"\n{'='*60}\nTRAINING COMPLETE!\n{'='*60}")
-    print(f"Best Average Deviation: {best_avg_deviation:.6f}")
-    print(f"Target: < 1.0 for success")
+    print(f"Best Average Absolute Deviation: ${best_avg_deviation:.4f}")
     return agent, lsmc_estimator
 
 # ============================================================
 # MAIN EXECUTION
 # ============================================================
-agent, lsmc_estimator = train_universal_agent_with_lsmc()
+agent, lsmc_estimator = train_exact_replication_agent()
 
 # ============================================================
-# TRAINING COMPLETE — CONSISTENT REPORT FORMAT
+# FINAL EVALUATION
 # ============================================================
+print("\n" + "="*60 + "\nFINAL EVALUATION - HEDGE RATIOS\n" + "="*60)
+
+simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps, dt)
+paths = simulator.simulate_paths(1000)
+
+unique_states = set()
+for path in paths:
+    for node in path:
+        unique_states.add((node['S'], node['t']))
+
+unique_states = sorted(list(unique_states), key=lambda x: (x[1], -x[0]))
+
+print(f"\nEvaluating {len(unique_states)} unique states")
+print("="*60)
+
+success_count = 0
+total_tests = len(unique_states)
+
+for S, t in unique_states:
+    is_terminal = (t == T_steps)
+    
+    if is_terminal:
+        target = max(S - K, 0)
+        prices = [np.exp(-r * dt)]
+    else:
+        target = lsmc_estimator.predict_child_continuation_values(S, t)
+        prices = [np.exp(-r * dt) * p for p in probabilities]
+    
+    state = construct_state(S, t, target)
+    action = agent.select_action(state, add_noise=False)
+    action_used = action[:1] if is_terminal else action[:N]
+    
+    _, cost, deviation = compute_reward(action_used, target, prices, is_terminal, child_occurred=None)
+    
+    is_success = deviation < 0.5
+    if is_success:
+        success_count += 1
+    
+    # Print results
+    print(f"\nt={t} | S=${S:.2f}")
+    print("-"*60)
+    
+    if is_terminal:
+        print(f"LSMC Target (continuation value): ${target:.4f}")
+        print(f"RL Hedge (# of binaries):          {action_used[0]:+.4f}")
+        print(f"Absolute Deviation:                ${deviation:.4f} {'✓' if is_success else '✗'}")
+        print(f"Total Cost:                        ${cost:+.4f}")
+    else:
+        print(f"LSMC Targets (continuation values):")
+        for i in range(N):
+            print(f"  State {i}: ${target[i]:.4f}")
+        print("-"*60)
+        print(f"RL Hedge (# of binaries to hold):")
+        for i in range(N):
+            print(f"  State {i}: {action_used[i]:+.4f}")
+        print("-"*60)
+        print(f"Absolute Deviations:")
+        for i in range(N):
+            dev = abs(action_used[i] - target[i])
+            print(f"  State {i}: ${dev:.4f}")
+        print(f"Average: ${deviation:.4f} {'✓' if is_success else '✗'}")
+        print(f"Total Cost: ${cost:+.4f}")
+    
+    print("-"*60)
+    if is_success:
+        print("✓ Hedge ratios match LSMC targets")
+    else:
+        print("✗ Hedge ratios deviate from LSMC targets")
+    print("="*60)
 
 print("\n" + "="*60)
-print("TRAINING COMPLETE!")
+print(f"SUCCESS RATE: {success_count}/{total_tests} ({100*success_count/total_tests:.1f}%)")
 print("="*60)
-print("Target was: < 1.0 for success\n")
-
-# ============================================================
-# FINAL EVALUATION — Unified Hedge Report
-# ============================================================
-
-print("FINAL EVALUATION")
+print("\nFINANCIAL MATH VALIDATION:")
+print(f"• Complete market: {N} states, {N} binaries")
+print(f"• Theoretical result: Hedge = LSMC continuation values")
 print("="*60)
-
-# pick representative evaluation states (you can change)
-eval_states = [100.0, 120.0, 80.0]  # sample underlying prices
-successes, total_nodes = 0, 0
-
-for S_eval in eval_states:
-    for t_eval in range(T_steps + 1):
-        # --- Get LSMC target continuation values ---
-        try:
-            target_values = lsmc_estimator.predict_child_continuation_values(S_eval, t_eval)
-        except Exception:
-            # terminal node → direct payoff
-            target_values = [max(S_eval - K, 0.0)]
-
-        target_values = np.atleast_1d(target_values)
-
-        # --- Agent hedge decision ---
-        state_input = construct_state(S_eval, t_eval, target_values)
-        hedge = agent.select_action(state_input, add_noise=False)
-        hedge = np.atleast_1d(hedge)
-
-        # --- Price each binary (risk-neutral) ---
-        if hedge.shape[0] == 1:
-            binary_prices = [np.exp(-r * dt)]
-        else:
-            # Prefer using the globally computed `probabilities` if its length matches or exceeds the action dim;
-            # otherwise fall back to uniform probabilities.
-            try:
-                if len(probabilities) >= hedge.shape[0]:
-                    p_list = probabilities[:hedge.shape[0]].tolist()
-                else:
-                    p_list = [1.0 / hedge.shape[0]] * hedge.shape[0]
-            except NameError:
-                # If `probabilities` is somehow not defined, use uniform probabilities.
-                p_list = [1.0 / hedge.shape[0]] * hedge.shape[0]
-            binary_prices = [np.exp(-r * dt) * float(p) for p in p_list]
-
-        # --- Compute hedge cost & deviations ---
-        cost = float(np.sum(np.array(hedge) * np.array(binary_prices)))
-        deviations = np.abs(np.array(hedge) - np.array(target_values))
-        avg_dev = float(np.mean(deviations))
-
-        # --- Print structured result ---
-        print(f"\nState: S=${S_eval:.2f}, t={t_eval}")
-        print(f"  Targets: {[round(v, 4) for v in target_values]}")
-        print(f"  Hedges:  {[round(h, 4) for h in hedge]}")
-        print(f"  Binary Prices: {[round(b, 6) for b in binary_prices]}")
-        print(f"  Cost: ${cost:.4f}")
-        print(f"  Individual Devs: {[round(d, 4) for d in deviations]}")
-        print(f"  Average Deviation: {avg_dev:.6f} {'✓' if avg_dev < 1.0 else '✗'}")
-
-        total_nodes += 1
-        if avg_dev < 1.0:
-            successes += 1
-
-# ============================================================
-# SUMMARY
-# ============================================================
-success_rate = (successes / total_nodes * 100) if total_nodes > 0 else 0
-print("\n" + "="*60)
-print(f"SUCCESS RATE: {successes}/{total_nodes} ({success_rate:.1f}%)")
-print("="*60 + "\n")
+print("\nTo test different N: Change N=4 to N=3, 5, 7, 10, etc. at top")
+print("="*60)
