@@ -496,42 +496,76 @@ def compute_reward_super_replication(hedge, S, t, lsmc_estimator, is_terminal):
 # TRAINING LOOP
 # ============================================================
 def train_super_replication():
+    import time  # For timing diagnostics
     global ACTION_SCALE
     
-    # CRITICAL: Run LSMC ONCE to determine ACTION_SCALE
+    # ============================================================
+    # PHASE 1: Computing ACTION_SCALE from LSMC
+    # ============================================================
+    phase1_start = time.time()
     print("\n" + "=" * 60)
     print("PHASE 1: Computing ACTION_SCALE from LSMC")
     print("=" * 60)
     
+    # Step 1: Create simulator
+    print("Creating simulator...")
+    t1 = time.time()
     simulator = NnomialPathSimulator(S0, moves, probs, T_steps, dt)
+    print(f"  Time: {time.time() - t1:.2f} seconds")
+    
+    # Step 2: Simulate paths (only 5000 for speed)
+    print("Simulating 5000 paths for ACTION_SCALE estimation...")
+    t1 = time.time()
     paths_temp = simulator.simulate_paths(5000)
+    print(f"  Time: {time.time() - t1:.2f} seconds")
+    
+    # Step 3: Run LSMC once
+    print("Running LSMC on paths...")
+    t1 = time.time()
     lsmc_temp = LSMCEstimator(
         polynomial_degree=POLYNOMIAL_DEGREE,
         alpha=REGRESSION_ALPHA,
         conservatism=CONSERVATISM_FACTOR
     )
     paths_temp = lsmc_temp.estimate_continuation_values(paths_temp, r, dt)
+    print(f"  Time: {time.time() - t1:.2f} seconds")
     
-    # Find maximum target across all nodes
+    # Step 4: Scan for maximum target
+    print("Scanning for maximum LSMC target...")
+    t1 = time.time()
     max_target = 0
-    for path in paths_temp[:1000]:
-        for node in path[:-1]:  # Non-terminal nodes
+    for path in paths_temp[:1000]:  # Check first 1000 paths only
+        for node in path[:-1]:  # Non-terminal nodes only
             S_node, t_node = node['S'], node['t']
             targets = lsmc_temp.predict_child_continuation_values(S_node, t_node, conservative=True)
             max_target = max(max_target, max(targets))
+    print(f"  Time: {time.time() - t1:.2f} seconds")
     
+    # Step 5: Set ACTION_SCALE with margin
     ACTION_SCALE = max_target * 2.0  # 100% margin above max target
+    
+    phase1_time = time.time() - phase1_start
     print(f"\nMax LSMC target found: ${max_target:.2f}")
     print(f"ACTION_SCALE set to: {ACTION_SCALE:.2f} (2.0× margin)")
+    print(f"PHASE 1 TOTAL TIME: {phase1_time:.2f} seconds")
     print("=" * 60)
     
-    # Now create the agent with proper ACTION_SCALE
+    # ============================================================
+    # PHASE 2: Training Super-Replication Policy
+    # ============================================================
+    phase2_start = time.time()
+    print("\n" + "=" * 60)
+    print("PHASE 2: Training Super-Replication Policy")
+    print("=" * 60)
+    
+    # Create fresh LSMC estimator for training (don't reuse Phase 1)
     lsmc_estimator = LSMCEstimator(
         polynomial_degree=POLYNOMIAL_DEGREE,
         alpha=REGRESSION_ALPHA,
         conservatism=CONSERVATISM_FACTOR
     )
     
+    # Create agent with correct ACTION_SCALE
     agent = UniversalDDPGAgent(state_dim=4, action_dim=N, hidden_dim=HIDDEN_DIM, action_scale=ACTION_SCALE)
     reward_normalizer = RewardNormalizer(clip_range=10.0)
     
@@ -539,11 +573,8 @@ def train_super_replication():
     best_actor_state = None
     patience_counter = 0
     
-    print("\n" + "=" * 60)
-    print("PHASE 2: Training Super-Replication Policy")
-    print("=" * 60)
-    
     for iteration in range(NUM_ITERATIONS):
+        iter_start = time.time()
         print(f"\n{'='*60}\nITERATION {iteration + 1}/{NUM_ITERATIONS}\n{'='*60}")
         
         current_actor_lr = BASE_ACTOR_LR * (LR_DECAY ** iteration)
@@ -563,7 +594,7 @@ def train_super_replication():
         paths = simulator.simulate_paths(NUM_SIMULATIONS)
         paths = lsmc_estimator.estimate_continuation_values(paths, r, dt)
         
-        print(f"\nTraining super-replication policy...")
+        print(f"Training super-replication policy...")
         episodes_this_iter = TOTAL_EPISODES // NUM_ITERATIONS
         reward_history = []
         
@@ -602,7 +633,7 @@ def train_super_replication():
                 avg_reward = np.mean(recent_rewards)
                 print(f"  Episode {episode+1}/{episodes_this_iter}: Avg Reward={avg_reward:.1f}")
         
-        print(f"\nEvaluating super-replication hedges...")
+        print(f"Evaluating super-replication hedges...")
         total_shortfall, total_cost, num_evals = 0, 0, 0
         
         for path in paths[:1000]:
@@ -626,9 +657,11 @@ def train_super_replication():
         avg_shortfall = total_shortfall / num_evals
         avg_cost = total_cost / num_evals
         
+        iter_time = time.time() - iter_start
         print(f"\nIteration {iteration + 1} Results:")
         print(f"  Average Shortfall: ${avg_shortfall:.4f} (target: $0.00)")
         print(f"  Average Cost: ${avg_cost:.2f}")
+        print(f"  Iteration Time: {iter_time:.1f} seconds")
         
         if avg_shortfall < best_avg_shortfall:
             best_avg_shortfall = avg_shortfall
@@ -639,7 +672,7 @@ def train_super_replication():
             patience_counter += 1
             print(f"  No improvement (patience: {patience_counter}/{EARLY_STOP_PATIENCE})")
         
-        # FIXED: Early stopping without iteration >= 8 constraint
+        # FIXED: Early stopping without iteration constraint
         if patience_counter >= EARLY_STOP_PATIENCE:
             print(f"\n✅ EARLY STOPPING at iteration {iteration + 1}!")
             print(f"   No improvement for {EARLY_STOP_PATIENCE} consecutive iterations")
@@ -648,8 +681,9 @@ def train_super_replication():
                 print(f"   Restored best model (shortfall: ${best_avg_shortfall:.4f})")
             break
         
-        if avg_shortfall > 50 and iteration >= 6:
-            print(f"\n⚠️  Training diverged (shortfall > $50)")
+        # Stricter divergence detection
+        if avg_shortfall > 30 and iteration >= 6:
+            print(f"\n⚠️  Training diverged (shortfall > $30)")
             if best_actor_state is not None:
                 agent.actor.load_state_dict(best_actor_state)
                 print(f"   Restored best model (shortfall: ${best_avg_shortfall:.4f})")
@@ -659,8 +693,12 @@ def train_super_replication():
             print(f"\n🎯 EXCELLENT! Shortfall < $0.50!")
             break
     
+    phase2_time = time.time() - phase2_start
     print(f"\n{'='*60}\nTRAINING COMPLETE!\n{'='*60}")
     print(f"Best Average Shortfall: ${best_avg_shortfall:.4f}")
+    print(f"Phase 1 Time: {phase1_time:.2f} seconds")
+    print(f"Phase 2 Time: {phase2_time:.2f} seconds")
+    print(f"Total Time: {phase1_time + phase2_time:.2f} seconds")
     
     if best_actor_state is not None:
         agent.actor.load_state_dict(best_actor_state)
@@ -675,150 +713,6 @@ def train_super_replication():
 if __name__ == "__main__":
     agent, lsmc_estimator = train_super_replication()
     
-    # ============================================================
-    # FINAL EVALUATION - ALL 31 NODES (FINANCIAL MATH POV)
-    # ============================================================
-    print("\n" + "="*60)
-    print(f"FINAL EVALUATION - {N}-NOMIAL SUPER-REPLICATION")
-    print("="*60)
-    print("Financial Math Goal: Find minimal h where h ≥ continuation_value")
-    print("="*60)
-    
-    # Generate all 31 unique nodes (1 root + 5 t=1 + 25 t=2)
-    test_cases = []
-    
-    # Root
-    test_cases.append((S0, 0, []))
-    
-    # All t=1 nodes
-    for i in range(N):
-        S = S0 * moves[i]
-        test_cases.append((S, 1, [i]))
-    
-    # All t=2 nodes
-    for i in range(N):
-        for j in range(N):
-            S = S0 * moves[i] * moves[j]
-            test_cases.append((S, 2, [i, j]))
-    
-    print(f"\nEvaluating all {len(test_cases)} unique nodes")
-    print("="*60)
-    
-    nodes_dominated = 0
-    total_shortfall = 0
-    total_cost = 0
-    
-    for idx, (S, t, path_history) in enumerate(test_cases):
-        is_terminal = (t == T_steps)
-        
-        # Get LSMC targets (no extra conservatism - penalties handle it)
-        if is_terminal:
-            targets = max(S - K, 0)
-        else:
-            targets = lsmc_estimator.predict_child_continuation_values(S, t, conservative=True)
-        
-        # RL-discovered hedge
-        state = construct_state(S, t, path_history)
-        action = agent.select_action(state, add_noise=False)
-        hedge = action[:1] if is_terminal else action[:N]
-        
-        # Check dominance
-        if is_terminal:
-            shortfall = max(0, targets - hedge[0])
-            cost = abs(hedge[0])
-            dominates = (shortfall < 0.10)  # Allow small numerical errors
-        else:
-            shortfalls = [max(0, targets[i] - hedge[i]) for i in range(N)]
-            shortfall = np.mean(shortfalls)
-            cost = np.sum(np.abs(hedge))
-            dominates = all(s < 0.10 for s in shortfalls)
-        
-        if dominates:
-            nodes_dominated += 1
-        total_shortfall += shortfall
-        total_cost += cost
-        
-        # Print detailed results for key nodes (root, t=1, and sample of t=2)
-        should_print = (t <= 1) or (idx % 5 == 0)  # Print all non-terminal + every 5th terminal
-        
-        if should_print:
-            path_str = "→".join([str(p) for p in path_history]) if path_history else "ROOT"
-            
-            print(f"\nNode {idx+1}/{len(test_cases)}: t={t}, S=${S:.2f}, Path: {path_str}")
-            print("-"*60)
-            
-            if is_terminal:
-                print(f"Target (payoff): ${targets:.4f}")
-                print(f"RL Hedge: {hedge[0]:+.4f}")
-                print(f"Shortfall: ${shortfall:.4f}")
-                print(f"Cost: ${cost:.2f}")
-                print(f"Dominates: {'YES ✓' if dominates else 'NO ✗'}")
-            else:
-                print(f"LSMC Targets:")
-                print(f"  {[f'${v:.2f}' for v in targets]}")
-                print(f"RL Hedge:")
-                print(f"  {[f'{h:+.2f}' for h in hedge]}")
-                
-                shortfalls_list = [max(0, targets[i] - hedge[i]) for i in range(N)]
-                print(f"Shortfalls:")
-                print(f"  {[f'${s:.2f}' for s in shortfalls_list]}")
-                
-                print(f"Avg Shortfall: ${shortfall:.4f}")
-                print(f"Total Cost: ${cost:.2f}")
-                print(f"Dominates: {'YES ✓' if dominates else 'NO ✗'}")
-            print("="*60)
-    
-    # Summary
-    print("\n" + "="*60)
-    print(f"{N}-NOMIAL SUPER-REPLICATION SUMMARY")
-    print("="*60)
-    print(f"Nodes with Complete Dominance: {nodes_dominated}/{len(test_cases)}")
-    print(f"Dominance Rate: {100*nodes_dominated/len(test_cases):.1f}%")
-    print(f"Total Shortfall (all nodes): ${total_shortfall:.4f}")
-    print(f"Average Cost per Node: ${total_cost/len(test_cases):.2f}")
-    print("="*60)
-    
-    if nodes_dominated == len(test_cases) and total_cost/len(test_cases) < 100:
-        print("\n🎯 EXCELLENT! Minimal super-replication achieved!")
-        print(f"RL discovered efficient hedges for N={N} with minimal excess.")
-        print(f"Average cost ${total_cost/len(test_cases):.2f}/node is near-optimal!")
-    elif nodes_dominated == len(test_cases) and total_cost/len(test_cases) < 150:
-        print(f"\n✓ VERY GOOD! All {len(test_cases)} nodes dominated.")
-        print(f"Average cost: ${total_cost/len(test_cases):.2f}/node")
-        print("Cost is reasonable for N=5 super-replication.")
-    elif nodes_dominated >= 0.90 * len(test_cases):
-        print(f"\n✓ GOOD: {nodes_dominated}/{len(test_cases)} nodes dominated ({100*nodes_dominated/len(test_cases):.1f}%)")
-        print(f"Average cost: ${total_cost/len(test_cases):.2f}/node")
-        print("Most nodes achieve super-replication with reasonable efficiency.")
-    elif nodes_dominated >= 0.75 * len(test_cases):
-        print(f"\n⚠️  PARTIAL: {nodes_dominated}/{len(test_cases)} nodes dominated ({100*nodes_dominated/len(test_cases):.1f}%)")
-        print(f"Average cost: ${total_cost/len(test_cases):.2f}/node")
-        print("Consider reducing COST_WEIGHT to prioritize dominance over cost.")
-    else:
-        print(f"\n✗ NEEDS IMPROVEMENT: Only {nodes_dominated}/{len(test_cases)} nodes dominated")
-        print(f"Average cost: ${total_cost/len(test_cases):.2f}/node")
-        print("ACTION_SCALE may still be too small, or penalties need rebalancing.")
-    
-    print("="*60)
-    print("\nFINANCIAL MATH INTERPRETATION:")
-    print(f"• RL discovered hedge positions h_i at each of {len(test_cases)} nodes")
-    print(f"• N={N} children per non-terminal node → {N} hedge positions needed")
-    print(f"• LSMC provides continuation value targets (no artificial buffer)")
-    print(f"• Super-replication: Penalties enforce h_i ≥ target for safety")
-    print(f"• Dominance: h_i ≥ target for all {N} children")
-    print(f"• Cost minimization: Minimize Σ|h_i| subject to dominance")
-    print(f"• Penalty ratio: {SHORTFALL_PENALTY/COST_WEIGHT:.0f}:1 (shortfall:cost)")
-    print("• Pure RL: No LSMC values in state, learned through rewards only")
-    print(f"• ACTION_SCALE: {ACTION_SCALE:.2f} (dynamically set from LSMC)")
-    print("="*60)
-    print(f"\n✓ {N}-NOMIAL SUPER-REPLICATION COMPLETE")
-    print("="*60)
-if __name__ == "__main__":
-    agent, lsmc_estimator = train_super_replication()
-    
-    # ============================================================
-    # FINAL EVALUATION - ALL 31 NODES (FINANCIAL MATH POV)
-    # ============================================================
     print("\n" + "="*60)
     print(f"FINAL EVALUATION - {N}-NOMIAL SUPER-REPLICATION")
     print("="*60)
