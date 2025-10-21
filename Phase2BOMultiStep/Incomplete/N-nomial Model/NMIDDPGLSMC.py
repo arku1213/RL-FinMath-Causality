@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 import numpy as np
 from collections import deque
 import random
@@ -18,7 +19,7 @@ dt = 1.0
 
 # N-NOMIAL INCOMPLETE MARKET PARAMETERS
 N = 5                    # Number of states (e.g., 5-nomial)
-NUM_BINARIES = 4         # INCOMPLETE: 4 binaries for 5 states
+NUM_BINARIES = 2         # INCOMPLETE: 4 binaries for 5 states
 
 sigma = 0.3
 
@@ -40,7 +41,7 @@ CRITIC_LR = BASE_CRITIC_LR
 ACTION_SCALE = None
 
 # SUPER-REPLICATION PENALTIES (Asymmetric for incomplete markets)
-SHORTFALL_PENALTY = 500000      # HUGE - must never underpay!
+SHORTFALL_PENALTY = 5000000      # HUGE - must never underpay!
 EXCESS_PENALTY = 50             # Small penalty for overpayment
 COST_WEIGHT = 10000             # Balance between shortfall and cost
 
@@ -335,9 +336,8 @@ class UniversalActor(nn.Module):
         x = torch.relu(self.ln1(self.fc1(state)))
         x = torch.relu(self.ln2(self.fc2(x)))
         x = torch.relu(self.ln3(self.fc3(x)))
-        x = torch.tanh(self.fc4(x)) * self.action_scale
+        x = F.softplus(self.fc4(x)) * self.action_scale  # ← Fixed!
         return x
-
 
 class UniversalCritic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim):
