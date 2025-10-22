@@ -18,7 +18,7 @@ T_steps = 2
 dt = 1.0
 
 # N-NOMIAL INCOMPLETE MARKET PARAMETERS
-N = 5                    # Number of states (e.g., 5-nomial)
+N = 4                    # Number of states (e.g., 5-nomial)
 NUM_BINARIES = 2         # INCOMPLETE: 4 binaries for 5 states
 
 sigma = 0.3
@@ -41,7 +41,7 @@ CRITIC_LR = BASE_CRITIC_LR
 ACTION_SCALE = None
 
 # SUPER-REPLICATION PENALTIES (Asymmetric for incomplete markets)
-SHORTFALL_PENALTY = 5000000      # HUGE - must never underpay!
+SHORTFALL_PENALTY = 10000000      # HUGE - must never underpay!
 EXCESS_PENALTY = 50             # Small penalty for overpayment
 COST_WEIGHT = 10000             # Balance between shortfall and cost
 
