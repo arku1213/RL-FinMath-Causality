@@ -14,14 +14,14 @@ import time
 S0 = 100.0
 r = 0.05
 K = 100.0
-T_steps = 2
+T_steps = 3
 dt = 1.0
 
 # N-NOMIAL INCOMPLETE MARKET PARAMETERS
 N = 4                    # Number of states (e.g., 5-nomial)
 NUM_BINARIES = 2         # INCOMPLETE: 4 binaries for 5 states
 
-sigma = 0.25
+sigma = 0.22
 
 # LSMC parameters
 NUM_SIMULATIONS = 20000
@@ -46,7 +46,7 @@ EXCESS_PENALTY = 50             # Small penalty for overpayment
 COST_WEIGHT = 10000             # Balance between shortfall and cost
 
 # Training configuration
-base_episodes = 4000000
+base_episodes = 5000000
 TOTAL_EPISODES = base_episodes
 NUM_ITERATIONS = 16
 BATCH_SIZE = 128
