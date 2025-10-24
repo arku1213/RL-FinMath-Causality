@@ -21,11 +21,11 @@ dt = 1.0
 N = 4                    # Number of states (e.g., 5-nomial)
 NUM_BINARIES = 2         # INCOMPLETE: 4 binaries for 5 states
 
-sigma = 0.3
+sigma = 0.25
 
 # LSMC parameters
-NUM_SIMULATIONS = 10000
-POLYNOMIAL_DEGREE = 3
+NUM_SIMULATIONS = 20000
+POLYNOMIAL_DEGREE = 4
 REGRESSION_ALPHA = 0.1
 
 # SUPER-REPLICATION: No artificial buffer (penalties handle safety)
@@ -41,12 +41,12 @@ CRITIC_LR = BASE_CRITIC_LR
 ACTION_SCALE = None
 
 # SUPER-REPLICATION PENALTIES (Asymmetric for incomplete markets)
-SHORTFALL_PENALTY = 10000000      # HUGE - must never underpay!
+SHORTFALL_PENALTY = 20000000      # HUGE - must never underpay!
 EXCESS_PENALTY = 50             # Small penalty for overpayment
 COST_WEIGHT = 10000             # Balance between shortfall and cost
 
 # Training configuration
-base_episodes = 2000000
+base_episodes = 4000000
 TOTAL_EPISODES = base_episodes
 NUM_ITERATIONS = 16
 BATCH_SIZE = 128
