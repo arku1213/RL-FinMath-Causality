@@ -103,10 +103,16 @@ Day 22 - Tuesday, October 14th:
 - Thompson Sampling (worked until T=3)
 - DDPG -> WORKED UP UNTIL N=5, T=4 in N-nomial case, just takes a while
 
+Day 23 - Wednesday, October 15th ->
+Day 30 - Friday, October 25th:
+
+- Fixed code for Complete Replication Case, Complete Super-Replication & Incomplete Cases
+  - These look good now - just take a while to run. Looking into ACENET to speed up the process.
+- Started Phase B, which is looking at the Optimal Stopping Problem, both using American Put Options and Causality (DAGs). This is standard Dynamic Programming, with Backward Induction, rather than RL.
+
 Next goals:
 
-- Fix Complete Replication case - Trinomial & N-nomial
-- Document N-nomial code for Complete Super-Replication & Incomplete Case
-- Make sure that Incomplete Case code is doing as intended (Max number of binary options is less than number of scenarios)
-
+- Understand outputs in Phase B
+- Optimize Complete Replication Case, Complete Super-Replication & Incomplete Cases code
+- Adapt RL code for Causality
 - https://arxiv.org/pdf/2504.05521
