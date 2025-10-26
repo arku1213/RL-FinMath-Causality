@@ -75,15 +75,13 @@ class CausalOptimalStopping:
         self.value_upper = {}     # Upper bound V̄(t, X, A)
         self.robust_policy = {}   # Robust policy under uncertainty
         
-        print(f"Initialized Causal Optimal Stopping Problem (DAMPENED VERSION - CONTINUOUS TIME)")
-        print(f"  Formula: X_i+1 = X_i + U_i/3 + U_i+1/2")
+        print(f"Initialized Causal Optimal Stopping Problem (CONTINUOUS TIME)")
         print(f"  Time grid: t ∈ [{self.time_grid[0]:.1f}, {self.time_grid[-1]:.1f}] with dt={dt}")
         print(f"  Number of time steps: {self.T} (vs {n_exogenous} in discrete)")
         print(f"  Time points: {self.time_grid[:5]}... (showing first 5)")
         print(f"  Endogenous variables: X₀ to X_T")
         print(f"  X range: [{X_min}, {X_max}]")
         print(f"  U range: [{U_min}, {U_max}]")
-        print(f"  U weights: previous=1/3, current=1/2 (dampened)")
         print(f"  Treatment effect: ±{treatment_effect} (state-dependent)")
         if uncertainty_mode in ['bounds', 'robust']:
             print(f"  🔒 UNCERTAINTY MODE: {uncertainty_mode.upper()}")
@@ -145,12 +143,7 @@ class CausalOptimalStopping:
         """
         Structural equation for X_t with ONE-TIME INTERVENTION
         
-        COLLEAGUE'S DAMPENED FORMULA:
-        X_{i+1} = X_i + U_i/3 + U_{i+1}/2
-        
-        - Previous shock (U_i) has dampened effect (÷3)
-        - Current shock (U_{i+1}) has dampened effect (÷2)
-        - Models realistic decay: recent shocks matter more
+        X_t = f(X_{t-1}, U_{t-1}, U_t, intervention_now)
         
         Each U_i affects X_i and X_{i+1}
         
@@ -182,16 +175,13 @@ class CausalOptimalStopping:
         """
         optimal_X = 10  # Target value for treatment
         
-        # COLLEAGUE'S DAMPENED FORMULA
-        # Base transition: X_t = X_{t-1} + U_{t-1}/3 + U_t/2
-        X_new = float(X_prev)  # Use float for divisions
-        
-        # Add dampened effect of previous U (weight = 1/3)
+        # Base transition: X_t = X_{t-1} + (U_{t-1}/3 if U_prev else 0) + (U_t/2)
+        X_new = float(X_prev)
+
         if U_prev is not None:
-            X_new += U_prev / 3.0
-        
-        # Add dampened effect of current U (weight = 1/2)
-        X_new += U_current / 2.0
+            X_new += U_prev / 3.0  # dampened memory of previous shock
+        X_new += U_current / 2.0   # half-weight of current shock
+
         
         # ONE-TIME STATE-DEPENDENT treatment effect
         # Only applies if intervention_now is True
@@ -203,9 +193,6 @@ class CausalOptimalStopping:
                 # Too high: treatment DECREASES X (one-time reduction)
                 X_new -= self.treatment_effect
             # else: X_new at optimal, no treatment effect needed
-        
-        # Round to integer
-        X_new = round(X_new)
         
         # Check DEATH boundaries - both sides!
         if X_new < self.X_min or X_new > self.X_max:
@@ -544,6 +531,7 @@ class CausalOptimalStopping:
             print(f"  - Robustly WAIT: {robust_wait_count}/{total} ({robust_wait_count/total*100:.1f}%)")
             print(f"  - AMBIGUOUS (need more info): {ambiguous_count}/{total} ({ambiguous_count/total*100:.1f}%)")
             print(f"\nReady for robust simulation!\n")
+
     
     def _compute_intervention_value(self, t, X_t):
         """
@@ -767,12 +755,10 @@ class CausalOptimalStopping:
     
     def structural_equation_bounded(self, X_prev, U_current, U_prev, intervention_now, t, effect_multiplier=1.0):
         """
-        Structural equation with BOUNDED treatment effect (DAMPENED VERSION)
+        Structural equation with BOUNDED treatment effect
         
         For Algorithm 3 & 4: treatment effect can be uncertain
         effect_multiplier adjusts the treatment strength
-        
-        Formula: X_{i+1} = X_i + U_i/3 + U_{i+1}/2  (dampened shocks)
         
         Parameters:
         -----------
@@ -781,13 +767,12 @@ class CausalOptimalStopping:
         """
         optimal_X = 10
         
-        # Base transition with dampening: X_t = X_{t-1} + U_{t-1}/3 + U_t/2
+        # Base transition: X_t = X_{t-1} + (U_{t-1}/3 if U_prev else 0) + (U_t/2)
         X_new = float(X_prev)
-        
         if U_prev is not None:
-            X_new += U_prev / 3.0  # Dampened previous shock
-        X_new += U_current / 2.0   # Dampened current shock
-        
+            X_new += U_prev / 3.0
+        X_new += U_current / 2.0
+
         # Apply intervention if requested (with bounded effect)
         if intervention_now:
             adjusted_effect = self.treatment_effect * effect_multiplier
@@ -930,7 +915,7 @@ class CausalOptimalStopping:
         """
         if verbose:
             print(f"\n{'='*80}")
-            print(f"SIMULATING {num_paths} CAUSAL PATHS (CONTINUOUS TIME - DAMPENED)")
+            print(f"SIMULATING {num_paths} CAUSAL PATHS (CONTINUOUS TIME)")
             print(f"{'='*80}")
             print(f"Finding optimal ONE-TIME intervention time τ* for each path")
             print(f"τ* can now be any value in [{self.time_grid[0]:.1f}, {self.time_grid[-1]:.1f}]\n")
@@ -964,14 +949,16 @@ class CausalOptimalStopping:
                 print(f"  U shocks: {U_path[:3]}...")
                 
                 if tau_star is not None:
-                    print(f"  ✓ Optimal Intervention Time τ*: t={tau_star:.2f}")  # Show decimals!
+                    print(f"  ✓ Optimal Intervention Time τ*: t={tau_star:.2f}")
                     print(f"    X value at intervention: {info['X_value']}")
                     print(f"    Expected value: {info['value']:.3f}")
                 else:
                     reason = info.get('reason', 'unknown')
                     if reason == 'died_before_decision' or reason == 'died_without_intervention':
                         print(f"  ☠ Path died without intervention")
-                        print(f"    Died at: t={info.get('died_at', 'unknown'):.2f}")
+                        died_at = info.get('died_at')
+                        if died_at is not None:
+                            print(f"    Died at: t={died_at:.2f}")
                     elif reason == 'never_optimal':
                         print(f"  ✗ Never intervened (not needed)")
                         print(f"    Final X: {info['X_final']}, Outcome Y: {info['Y']}")
@@ -983,7 +970,7 @@ class CausalOptimalStopping:
         never_needed = sum(1 for r in results if r['info'].get('reason') == 'never_optimal')
         
         print(f"{'='*80}")
-        print("SUMMARY STATISTICS (CONTINUOUS TIME - DAMPENED)")
+        print("SUMMARY STATISTICS (CONTINUOUS TIME)")
         print(f"{'='*80}")
         print(f"  Total Paths: {num_paths}")
         print(f"  Paths with Intervention: {len(intervention_times)} ({len(intervention_times)/num_paths*100:.1f}%)")
@@ -1026,14 +1013,13 @@ class CausalOptimalStopping:
         print(f"{'Time':<10} {'X Value':<12} {'No Intervention':<30} {'Value':<15}")
         print("-" * 75)
         
-        # Sample time points strategically (don't show all 30!)
-        # Show: start, every ~5th step, and end
+        # Sample time points strategically
         sample_indices = []
-        step = max(1, self.T // 10)  # Show ~10 time points
+        step = max(1, self.T // 10)
         for t_idx in range(0, self.T, step):
             sample_indices.append(t_idx)
         if sample_indices[-1] != self.T - 1:
-            sample_indices.append(self.T - 1)  # Always show last time
+            sample_indices.append(self.T - 1)
         
         for t_idx in sample_indices:
             t_actual = self.time_grid[t_idx]
@@ -1057,12 +1043,11 @@ class CausalOptimalStopping:
 if __name__ == "__main__":
     print("\n" + "="*80)
     print("CAUSAL OPTIMAL STOPPING: ALL 4 ALGORITHMS")
-    print("DAMPENED VERSION + Comprehensive Analysis with Robust Extensions")
+    print("Comprehensive Analysis with Standard + Robust Extensions")
     print("="*80)
     print("\n🩺 Blood Pressure Analogy:")
     print("  X = health markers (1-20)")
     print("  U = random daily shocks (-3 to +3)")
-    print("  Formula: X_{i+1} = X_i + U_i/3 + U_{i+1}/2 (DAMPENED)")
     print("  A = medication (one-time intervention)")
     print("  Y = outcome (1=healthy, 0=adverse)")
     print("  Goal: Find optimal intervention strategy under uncertainty\n")
@@ -1083,21 +1068,21 @@ if __name__ == "__main__":
         X_max=20,
         U_min=-3,
         U_max=3,
-        treatment_effect=3,
+        treatment_effect=4,
         Y_threshold=10,
         discount=0.95,
         dt=0.2,
         uncertainty_mode='none'
     )
     
-    # Algorithm 2: Optimal Stopping (Algorithm 1 is implicit)
+    # Algorithm 2: Optimal Stopping
     print("\n🔹 Running Algorithm 2: Backward Induction for Optimal Stopping")
     model_standard.solve_backward_induction(X0=10, verbose=True)
     
     # Show policy summary
     model_standard.print_policy_summary(X0=10)
     
-    # Simulate paths to find τ* values
+    # Simulate paths
     print("\n🔹 Simulating Paths to Find Optimal Intervention Times (τ*)")
     results_standard = model_standard.simulate_multiple_paths(X0=10, num_paths=15, verbose=True)
     
@@ -1108,7 +1093,7 @@ if __name__ == "__main__":
     print("PART 2: ALGORITHMS 3 & 4 - ROBUST EXTENSIONS")
     print("Assumption: Model parameters are UNCERTAIN")
     print("  • Probability distribution: P ∈ [P̲, P̄] (±15% uncertainty)")
-    print("  • Treatment effect: e ∈ [2.55, 3.45] (±15% uncertainty)")
+    print("  • Treatment effect: e ∈ [3.00, 5.00] (±25% uncertainty)")
     print("="*80)
     
     model_robust = CausalOptimalStopping(
@@ -1119,16 +1104,16 @@ if __name__ == "__main__":
         X_max=20,
         U_min=-3,
         U_max=3,
-        treatment_effect=3,
+        treatment_effect=4,
         Y_threshold=10,
         discount=0.95,
         dt=0.2,
         uncertainty_mode='robust',
         prob_uncertainty=0.15,
-        effect_uncertainty=0.15
+        effect_uncertainty=0.25
     )
     
-    # Algorithm 4: Robust Optimal Stopping (internally calls Algorithm 3)
+    # Algorithm 4: Robust Optimal Stopping
     print("\n🔹 Running Algorithm 4: Robust Backward Induction")
     print("   (This automatically runs Algorithm 3 to compute bounds first)")
     model_robust.solve_robust_backward_induction(X0=10, verbose=True)
@@ -1252,83 +1237,65 @@ if __name__ == "__main__":
     # KEY INSIGHTS
     # ========================================================================
     print("\n" + "="*80)
-    print("KEY INSIGHTS FROM ALL 4 ALGORITHMS (DAMPENED VERSION)")
+    print("KEY INSIGHTS FROM ALL 4 ALGORITHMS")
     print("="*80)
     
     print("""
 🎯 WHAT WE LEARNED:
 
-1. DAMPENED SHOCK STRUCTURE:
-   • Formula: X_{i+1} = X_i + U_i/3 + U_{i+1}/2
-   • Previous shocks decay faster (1/3 weight)
-   • Current shocks have moderate impact (1/2 weight)
-   • More stable than full shock accumulation
+1. ALGORITHM 1 (Backward Expectation):
+   • Implicit in Algorithm 2's backward induction
+   • Computes E[Y] via dynamic programming
+   • Foundation for all other algorithms
 
 2. ALGORITHM 2 (Standard Optimal Stopping):
    • Finds optimal intervention time τ* for each path
-   • Dampening reduces extreme trajectories
-   • Treatment decisions more conservative
+   • Works under assumption of known model parameters
+   • Like American option pricing in finance
+   • Path-dependent decisions based on realized shocks
 
 3. ALGORITHM 3 (Bounds under Uncertainty):
-   • Quantifies epistemic uncertainty
-   • Width of bounds shows confidence level
-   • Wider bounds → need more data
+   • Acknowledges that model parameters are uncertain
+   • Provides [lower, upper] bounds on expected values
+   • Width of bounds = degree of epistemic uncertainty
+   • Wider bounds → less confident, need more data
 
 4. ALGORITHM 4 (Robust Optimal Stopping):
-   • Conservative policies under worst-case
-   • High ambiguity reflects model uncertainty
-   • Identifies states needing more information
+   • Derives policies that work under WORST-CASE uncertainty
+   • Three-way classification: Intervene / Wait / Ambiguous
+   • Conservative but reliable
+   • High ambiguity rate indicates significant model uncertainty
 
-🔬 DAMPENED vs STANDARD COMPARISON:
-   • Dampened: More gradual X evolution
-   • Standard: Shocks accumulate fully
-   • Dampened: Intervention less urgent
-   • Standard: More aggressive policies
+🔬 METHODOLOGICAL INSIGHTS:
 
-This reflects different causal mechanisms!
+Progression of sophistication:
+  Known model → Optimal decisions (Algorithm 2)
+  Uncertain model → Bounded values (Algorithm 3)
+  Uncertain model → Robust policies (Algorithm 4)
+
+When to use each:
+  • Algorithm 2: When confident in model parameters
+  • Algorithm 3: For sensitivity analysis and uncertainty quantification
+  • Algorithm 4: For conservative, safety-critical decisions
+
+🏥 MEDICAL INTERPRETATION:
+
+Standard approach (Algorithm 2):
+  "Based on our best estimate, start medication at day 5"
+
+Robust approach (Algorithm 4):
+  "Given uncertainty in drug effectiveness, we can only confidently
+   recommend medication in extreme cases; for moderate cases, we need
+   more data or clinical trials to reduce uncertainty"
+
+This reflects real medical decision-making under uncertainty!
     """)
     
     print("="*80)
     print("✅ ALL 4 ALGORITHMS COMPLETED SUCCESSFULLY!")
     print("="*80)
-    print("\n💡 To modify parameters, edit the code in __main__ block")
+    print("\n💡 To modify which algorithms run, edit the code in __main__ block")
     print("   Current: Runs ALL algorithms for comprehensive analysis\n")
-    print("\n" + "="*80)
-    print("CAUSAL OPTIMAL STOPPING: Finding Optimal Intervention Times")
-    print("DAMPENED SHOCKS VERSION + CONTINUOUS TIME (Colleague's Formula, dt=0.2)")
-    print("="*80)
-    print("\n🩺 Blood Pressure Analogy:")
-    print("  X = health markers (1-20, higher is better)")
-    print("  U = random daily shocks (-3 to +3)")
-    print("  Formula: X_i+1 = X_i + U_i/3 + U_i+1/2 (dampened)")
-    print("  A = medication (0=not taking, 1=taking)")
-    print("  Y = outcome (1=healthy, 0=adverse event)")
-    print("  Goal: Find optimal time τ* to start medication")
-    print("  τ* can be ANY time (e.g., 2.4 days, 4.8 days, etc.)\n")
-    
-    # Initialize the model with DAMPENED formula + CONTINUOUS TIME (dt=0.2)
-    model = CausalOptimalStopping(
-        n_endogenous=7,
-        n_exogenous=6,
-        T=6.0,             # Total time (float)
-        X_min=1,
-        X_max=20,
-        U_min=-3,
-        U_max=3,
-        treatment_effect=3,    # Stronger effect since shocks are dampened
-        Y_threshold=10,        # Not used anymore, kept for compatibility
-        discount=0.95,
-        dt=0.2                 # Time step = 0.2 (5 steps per unit time)
-    )
-    
-    # Solve using backward induction (Dynamic Programming!)
-    model.solve_backward_induction(X0=10, verbose=True)
-    
-    # Show the optimal policy
-    model.print_policy_summary(X0=10)
-    
-    # Simulate paths and find τ* for each
-    results = model.simulate_multiple_paths(X0=10, num_paths=15, verbose=True)
     
     print("\n" + "="*80)
     print("KEY INSIGHTS")
