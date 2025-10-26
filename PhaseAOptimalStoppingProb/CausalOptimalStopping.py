@@ -21,18 +21,25 @@ class CausalOptimalStopping:
     def __init__(self, 
                  n_endogenous=7,      # Number of X variables (X₀ to X₆)
                  n_exogenous=6,       # Number of U shocks (U₁ to U₆)
-                 T=6,                 # Time periods (matches n_exogenous)
+                 T=6,                 # Time horizon (can be float now, e.g. 6.0)
                  X_min=1,             # Min value for X variables
                  X_max=20,            # Max value for X variables
                  U_min=-3,            # Min value for U shocks
                  U_max=3,             # Max value for U shocks
-                 treatment_effect=4,  # Boost from treatment
+                 treatment_effect=3,  # Boost from treatment
                  Y_threshold=10,      # Threshold for Y=1 outcome
-                 discount=0.95):      # Discount factor for future values
+                 discount=0.95,       # Discount factor for future values
+                 dt=0.2):             # Time step size (NEW!)
         
         self.n_endogenous = n_endogenous
         self.n_exogenous = n_exogenous
-        self.T = T
+        self.T_final = T  # Total time horizon
+        self.dt = dt  # Time step size
+        
+        # Create fine time grid
+        self.time_grid = np.arange(0, T + dt, dt)
+        self.T = len(self.time_grid) - 1  # Number of time steps
+        
         self.X_min = X_min
         self.X_max = X_max
         self.U_min = U_min
@@ -49,10 +56,11 @@ class CausalOptimalStopping:
         self.value_function = {}  # V(t, X_state, A)
         self.policy = {}          # Optimal action at each state
         
-        print(f"Initialized Causal Optimal Stopping Problem")
-        print(f"  Endogenous variables: X₀ to X₆ ({n_endogenous} total)")
-        print(f"  Exogenous shocks: U₁ to U₆ ({n_exogenous} total)")
-        print(f"  Time periods: T = {T}")
+        print(f"Initialized Causal Optimal Stopping Problem (CONTINUOUS TIME)")
+        print(f"  Time grid: t ∈ [{self.time_grid[0]:.1f}, {self.time_grid[-1]:.1f}] with dt={dt}")
+        print(f"  Number of time steps: {self.T} (vs {n_exogenous} in discrete)")
+        print(f"  Time points: {self.time_grid[:5]}... (showing first 5)")
+        print(f"  Endogenous variables: X₀ to X_T")
         print(f"  X range: [{X_min}, {X_max}]")
         print(f"  U range: [{U_min}, {U_max}]")
         print(f"  Treatment effect: ±{treatment_effect} (state-dependent)")
@@ -189,7 +197,8 @@ class CausalOptimalStopping:
         
         KEY CHANGE: Intervention is ONE-TIME only (like exercising an option)
         
-        State space: (t, X, already_intervened)
+        State space: (t_idx, X, already_intervened)
+        - t_idx: time step index (maps to actual time via time_grid)
         - already_intervened = 0: Haven't used intervention yet
         - already_intervened = 1: Already used intervention (locked in)
         
@@ -215,7 +224,7 @@ class CausalOptimalStopping:
         
         # Stage T (final stage): Compute E[Y | X₆] for all possible X₆
         if verbose:
-            print(f"Stage {self.T}: Computing terminal values E[Y | X₆]...")
+            print(f"Stage t={self.time_grid[-1]:.1f}: Computing terminal values E[Y | X_final]...")
         
         for X_final in range(self.X_min, self.X_max + 1):
             # At final stage, no intervention decision to make
@@ -227,9 +236,11 @@ class CausalOptimalStopping:
             self.value_function[(self.T, X_final, 1)] = expected_Y  # Already used
         
         # Backward induction: Work from T-1 back to 0
-        for t in range(self.T - 1, -1, -1):
+        for t_idx in range(self.T - 1, -1, -1):
+            t_actual = self.time_grid[t_idx]
+            
             if verbose:
-                print(f"\nStage {t}: Computing optimal policies...")
+                print(f"\nStage t={t_actual:.1f}: Computing optimal policies...")
             
             intervene_count = 0
             wait_count = 0
@@ -240,30 +251,30 @@ class CausalOptimalStopping:
                 # Case 1: Already intervened (already_intervened=1)
                 # No decision to make - just compute continuation value without intervention
                 continuation_used = self._compute_continuation_value(
-                    t, X_t, already_intervened=True
+                    t_idx, X_t, already_intervened=True
                 )
-                self.value_function[(t, X_t, 1)] = continuation_used
-                self.policy[(t, X_t, 1)] = 'no_action'  # Already used intervention
+                self.value_function[(t_idx, X_t, 1)] = continuation_used
+                self.policy[(t_idx, X_t, 1)] = 'no_action'  # Already used intervention
                 
                 # Case 2: Haven't intervened yet (already_intervened=0)
                 # OPTIMAL STOPPING DECISION: Intervene now vs. Wait
                 
                 # Option A: Intervene NOW (use the one-time intervention)
-                value_intervene = self._compute_intervention_value(t, X_t)
+                value_intervene = self._compute_intervention_value(t_idx, X_t)
                 
                 # Option B: Wait (keep intervention available for later)
                 value_wait = self._compute_continuation_value(
-                    t, X_t, already_intervened=False
+                    t_idx, X_t, already_intervened=False
                 )
                 
                 # BELLMAN EQUATION: Take the maximum!
                 if value_intervene > value_wait:
-                    self.value_function[(t, X_t, 0)] = value_intervene
-                    self.policy[(t, X_t, 0)] = 'INTERVENE'
+                    self.value_function[(t_idx, X_t, 0)] = value_intervene
+                    self.policy[(t_idx, X_t, 0)] = 'INTERVENE'
                     intervene_count += 1
                 else:
-                    self.value_function[(t, X_t, 0)] = value_wait
-                    self.policy[(t, X_t, 0)] = 'wait'
+                    self.value_function[(t_idx, X_t, 0)] = value_wait
+                    self.policy[(t_idx, X_t, 0)] = 'wait'
                     wait_count += 1
             
             if verbose:
@@ -371,49 +382,56 @@ class CausalOptimalStopping:
         Simulate a single path of X values with random U shocks
         NO intervention applied during simulation - this is the natural path
         
+        Works with CONTINUOUS TIME GRID
+        
         Returns:
         --------
         X_path : list
-            Sequence of X values [X₀, X₁, ..., X₆]
+            Sequence of X values at each time step
         U_path : list
-            Sequence of U values [U₁, U₂, ..., U₆]
+            Sequence of U values at each time step
+        t_path : list
+            Actual time values corresponding to each step
         """
         if seed is not None:
             np.random.seed(seed)
         
         X_path = [X0]
         U_path = []
+        t_path = [self.time_grid[0]]  # Start at t=0
         
-        for t in range(1, self.n_endogenous):
+        for i in range(1, len(self.time_grid)):
             # Sample U_t
             U_t = np.random.choice(self.U_values, p=self.U_probs)
             U_path.append(U_t)
             
             # Compute X_t WITHOUT intervention (natural evolution)
             U_prev = U_path[-2] if len(U_path) >= 2 else None
-            X_t = self.structural_equation(X_path[-1], U_t, U_prev, intervention_now=False, t=t)
+            X_t = self.structural_equation(X_path[-1], U_t, U_prev, intervention_now=False, t=i)
             
             # Handle death
             if X_t == "DEATH":
                 X_path.append("DEATH")
+                t_path.append(self.time_grid[i])
                 break
             
             X_path.append(X_t)
+            t_path.append(self.time_grid[i])
         
-        return X_path, U_path
+        return X_path, U_path, t_path
     
-    def find_optimal_intervention_time(self, X_path, U_path):
+    def find_optimal_intervention_time(self, X_path, U_path, t_path):
         """
         Given a realized path, find the optimal intervention time τ*
         
         ONE-TIME INTERVENTION: Can only intervene once!
         
-        This is analogous to finding when to exercise the American put!
+        Returns τ* in actual time units (e.g., 3.4, 4.8, etc.)
         
         Returns:
         --------
-        tau_star : int or None
-            Optimal intervention time (None if never optimal or path dies)
+        tau_star : float or None
+            Optimal intervention time in actual time units
         intervention_info : dict
             Details about the intervention decision
         """
@@ -421,28 +439,31 @@ class CausalOptimalStopping:
         already_intervened = False
         
         # Walk through the path
-        for t in range(len(X_path) - 1):  # Don't include final X₆
-            X_t = X_path[t]
+        for t_idx in range(len(X_path) - 1):  # Don't include final X
+            X_t = X_path[t_idx]
+            t_actual = t_path[t_idx]
             
             # Check if we died
             if X_t == "DEATH":
                 return None, {
                     'time': None,
-                    'died_at': t,
+                    'time_index': t_idx,
+                    'died_at': t_actual,
                     'intervened': False,
                     'reason': 'died_before_decision'
                 }
             
             # Check policy at this state
             already_intervened_int = 1 if already_intervened else 0
-            action = self.policy.get((t, X_t, already_intervened_int), 'wait')
+            action = self.policy.get((t_idx, X_t, already_intervened_int), 'wait')
             
             if action == 'INTERVENE' and not already_intervened:
                 # Found optimal intervention time!
-                value_at_intervention = self.value_function.get((t, X_t, 0), 0)
+                value_at_intervention = self.value_function.get((t_idx, X_t, 0), 0)
                 
-                return t, {
-                    'time': t,
+                return t_actual, {
+                    'time': t_actual,
+                    'time_index': t_idx,
                     'X_value': X_t,
                     'value': value_at_intervention,
                     'intervened': True
@@ -477,23 +498,26 @@ class CausalOptimalStopping:
         Simulate multiple paths and find τ* for each
         
         ONE-TIME INTERVENTION: Just like American put simulation!
+        Now with CONTINUOUS TIME: τ* can be 0.4, 2.8, 4.6, etc.!
         """
         if verbose:
             print(f"\n{'='*80}")
-            print(f"SIMULATING {num_paths} CAUSAL PATHS")
+            print(f"SIMULATING {num_paths} CAUSAL PATHS (CONTINUOUS TIME)")
             print(f"{'='*80}")
-            print(f"Finding optimal ONE-TIME intervention time τ* for each path\n")
+            print(f"Finding optimal ONE-TIME intervention time τ* for each path")
+            print(f"τ* can now be any value in [{self.time_grid[0]:.1f}, {self.time_grid[-1]:.1f}]\n")
         
         results = []
         
         for path_num in range(num_paths):
-            X_path, U_path = self.simulate_path(X0=X0, seed=path_num)
-            tau_star, info = self.find_optimal_intervention_time(X_path, U_path)
+            X_path, U_path, t_path = self.simulate_path(X0=X0, seed=path_num)
+            tau_star, info = self.find_optimal_intervention_time(X_path, U_path, t_path)
             
             result = {
                 'path_number': path_num + 1,
                 'X_path': X_path,
                 'U_path': U_path,
+                't_path': t_path,
                 'tau_star': tau_star,
                 'info': info
             }
@@ -505,21 +529,21 @@ class CausalOptimalStopping:
                 # Handle death in trajectory
                 if "DEATH" in X_path:
                     death_idx = X_path.index("DEATH")
-                    print(f"  X trajectory: {X_path[:death_idx]} → DEATH at t={death_idx}")
+                    print(f"  X trajectory: {X_path[:min(4, death_idx)]}... → DEATH at t={t_path[death_idx]:.1f}")
                 else:
-                    print(f"  X trajectory: {X_path[:4]}... → {X_path[-1]}")
+                    print(f"  X trajectory: {X_path[:4]}... → {X_path[-1]} at t={t_path[-1]:.1f}")
                 
                 print(f"  U shocks: {U_path[:3]}...")
                 
                 if tau_star is not None:
-                    print(f"  ✓ Optimal Intervention Time τ*: t={tau_star}")
+                    print(f"  ✓ Optimal Intervention Time τ*: t={tau_star:.2f}")  # Show decimals!
                     print(f"    X value at intervention: {info['X_value']}")
                     print(f"    Expected value: {info['value']:.3f}")
                 else:
                     reason = info.get('reason', 'unknown')
                     if reason == 'died_before_decision' or reason == 'died_without_intervention':
                         print(f"  ☠ Path died without intervention")
-                        print(f"    Died at: {info.get('died_at', 'unknown')}")
+                        print(f"    Died at: t={info.get('died_at', 'unknown'):.2f}")
                     elif reason == 'never_optimal':
                         print(f"  ✗ Never intervened (not needed)")
                         print(f"    Final X: {info['X_final']}, Outcome Y: {info['Y']}")
@@ -531,7 +555,7 @@ class CausalOptimalStopping:
         never_needed = sum(1 for r in results if r['info'].get('reason') == 'never_optimal')
         
         print(f"{'='*80}")
-        print("SUMMARY STATISTICS")
+        print("SUMMARY STATISTICS (CONTINUOUS TIME)")
         print(f"{'='*80}")
         print(f"  Total Paths: {num_paths}")
         print(f"  Paths with Intervention: {len(intervention_times)} ({len(intervention_times)/num_paths*100:.1f}%)")
@@ -540,18 +564,22 @@ class CausalOptimalStopping:
         print(f"    - Never needed: {never_needed}")
         
         if intervention_times:
-            print(f"\n  Intervention Times:")
+            print(f"\n  Intervention Times (continuous):")
             print(f"    Average τ*: {np.mean(intervention_times):.2f}")
-            print(f"    Earliest: t={np.min(intervention_times)}")
-            print(f"    Latest: t={np.max(intervention_times)}")
+            print(f"    Earliest: t={np.min(intervention_times):.2f}")
+            print(f"    Latest: t={np.max(intervention_times):.2f}")
+            print(f"    Std deviation: {np.std(intervention_times):.2f}")
             
-            # Distribution
-            from collections import Counter
-            time_dist = Counter(intervention_times)
-            print(f"\n  Distribution of τ*:")
-            for t in sorted(time_dist.keys()):
-                count = time_dist[t]
-                print(f"    t={t}: {count} paths ({count/len(intervention_times)*100:.1f}%)")
+            # Distribution by bins
+            print(f"\n  Distribution of τ* (by integer bins):")
+            for bin_start in range(int(self.time_grid[0]), int(self.time_grid[-1]) + 1):
+                count = sum(1 for t in intervention_times if bin_start <= t < bin_start + 1)
+                if count > 0:
+                    print(f"    t ∈ [{bin_start}, {bin_start+1}): {count} paths ({count/len(intervention_times)*100:.1f}%)")
+            
+            # Show actual times (first 10)
+            print(f"\n  Actual intervention times (first {min(10, len(intervention_times))}):")
+            print(f"    {[f'{t:.2f}' for t in sorted(intervention_times)[:10]]}")
         
         print(f"{'='*80}\n")
         
@@ -560,27 +588,39 @@ class CausalOptimalStopping:
     def print_policy_summary(self, X0=10):
         """
         Print the optimal policy for key states
+        Shows actual time values (not indices)
         """
         print(f"\n{'='*80}")
         print("OPTIMAL INTERVENTION POLICY (Key States)")
         print(f"{'='*80}")
         print(f"Starting from X0 = {X0}")
         print("ONE-TIME INTERVENTION: Can only use once!\n")
-        print(f"{'Time':<8} {'X Value':<12} {'No Intervention':<30} {'Value':<15}")
+        print(f"{'Time':<10} {'X Value':<12} {'No Intervention':<30} {'Value':<15}")
         print("-" * 75)
         
-        for t in range(self.T):
+        # Sample time points strategically (don't show all 30!)
+        # Show: start, every ~5th step, and end
+        sample_indices = []
+        step = max(1, self.T // 10)  # Show ~10 time points
+        for t_idx in range(0, self.T, step):
+            sample_indices.append(t_idx)
+        if sample_indices[-1] != self.T - 1:
+            sample_indices.append(self.T - 1)  # Always show last time
+        
+        for t_idx in sample_indices:
+            t_actual = self.time_grid[t_idx]
+            
             # Show policy for a range of X values
             for X in [3, 7, 10, 14, 17]:
                 if X < self.X_min or X > self.X_max:
                     continue
                     
-                policy_available = self.policy.get((t, X, 0), 'unknown')
-                value_available = self.value_function.get((t, X, 0), 0)
+                policy_available = self.policy.get((t_idx, X, 0), 'unknown')
+                value_available = self.value_function.get((t_idx, X, 0), 0)
                 
                 action_str = "🔴 INTERVENE NOW!" if policy_available == 'INTERVENE' else "⚪ Wait"
                 
-                print(f"t={t:<6} X={X:<10} {action_str:<30} {value_available:.4f}")
+                print(f"t={t_actual:<7.1f} X={X:<10} {action_str:<30} {value_available:.4f}")
         
         print(f"{'='*80}\n")
 
@@ -589,26 +629,29 @@ class CausalOptimalStopping:
 if __name__ == "__main__":
     print("\n" + "="*80)
     print("CAUSAL OPTIMAL STOPPING: Finding Optimal Intervention Times")
+    print("CONTINUOUS TIME VERSION (dt=0.2)")
     print("="*80)
     print("\n🩺 Blood Pressure Analogy:")
     print("  X = health markers (1-20, higher is better)")
     print("  U = random daily shocks (-3 to +3)")
     print("  A = medication (0=not taking, 1=taking)")
     print("  Y = outcome (1=healthy, 0=adverse event)")
-    print("  Goal: Find optimal time τ* to start medication\n")
+    print("  Goal: Find optimal time τ* to start medication")
+    print("  τ* can be ANY time (e.g., 2.4 days, 4.8 days, etc.)\n")
     
-    # Initialize the model
+    # Initialize the model with CONTINUOUS TIME (dt=0.2)
     model = CausalOptimalStopping(
         n_endogenous=7,
         n_exogenous=6,
-        T=6,
+        T=6.0,             # Total time (float)
         X_min=1,
         X_max=20,
         U_min=-3,
         U_max=3,
-        treatment_effect=4,    # Increased from 3 for more nuanced decisions
+        treatment_effect=4,    # Strong treatment effect
         Y_threshold=10,        # Not used anymore, kept for compatibility
-        discount=0.95
+        discount=0.95,
+        dt=0.2                 # Time step = 0.2 (5 steps per unit time)
     )
     
     # Solve using backward induction (Dynamic Programming!)
