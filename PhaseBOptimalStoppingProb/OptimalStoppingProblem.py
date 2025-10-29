@@ -29,7 +29,10 @@ class CausalOptimalStopping:
                  treatment_effect=3,  # Boost from treatment
                  Y_threshold=10,      # Threshold for Y=1 outcome
                  discount=0.95,       # Discount factor for future values
-                 dt=0.2):             # Time step size (NEW!)
+                 dt=0.2,              # Time step size
+                 uncertainty_mode='none',  # 'none', 'bounds', or 'robust'
+                 prob_uncertainty=0.1,     # Uncertainty radius for probabilities
+                 effect_uncertainty=0.2):  # Uncertainty in treatment effect
         
         self.n_endogenous = n_endogenous
         self.n_exogenous = n_exogenous
@@ -48,25 +51,29 @@ class CausalOptimalStopping:
         self.Y_threshold = Y_threshold
         self.discount = discount
         
+        # NEW: Uncertainty parameters for Algorithms 3 & 4
+        self.uncertainty_mode = uncertainty_mode
+        self.prob_uncertainty = prob_uncertainty  # ε for P ∈ [P̲, P̄]
+        self.effect_uncertainty = effect_uncertainty  # δ for effect ∈ [e-δ, e+δ]
+        
         # U values and their probabilities
         self.U_values = list(range(U_min, U_max + 1))
         self.U_probs = self._compute_U_probabilities()
+        
+        # Compute uncertainty sets if in bounds mode
+        if uncertainty_mode in ['bounds', 'robust']:
+            self.U_probs_lower, self.U_probs_upper = self._compute_probability_bounds()
+            self.effect_lower = treatment_effect * (1 - effect_uncertainty)
+            self.effect_upper = treatment_effect * (1 + effect_uncertainty)
         
         # Storage for value functions and policies
         self.value_function = {}  # V(t, X_state, A)
         self.policy = {}          # Optimal action at each state
         
-        print(f"Initialized Causal Optimal Stopping Problem (CONTINUOUS TIME)")
-        print(f"  Time grid: t ∈ [{self.time_grid[0]:.1f}, {self.time_grid[-1]:.1f}] with dt={dt}")
-        print(f"  Number of time steps: {self.T} (vs {n_exogenous} in discrete)")
-        print(f"  Time points: {self.time_grid[:5]}... (showing first 5)")
-        print(f"  Endogenous variables: X₀ to X_T")
-        print(f"  X range: [{X_min}, {X_max}]")
-        print(f"  U range: [{U_min}, {U_max}]")
-        print(f"  Treatment effect: ±{treatment_effect} (state-dependent)")
-        print(f"  DEATH if X < {X_min} or X > {X_max}")
-        print(f"  Healthy range: [7, 14] for Y=1")
-        print(f"  Treatment: Pushes X toward optimal value (10)")
+        # NEW: Storage for bounds (Algorithms 3 & 4)
+        self.value_lower = {}     # Lower bound V̲(t, X, A)
+        self.value_upper = {}     # Upper bound V̄(t, X, A)
+        self.robust_policy = {}   # Robust policy under uncertainty
     
     def _compute_U_probabilities(self):
         """
@@ -84,6 +91,37 @@ class CausalOptimalStopping:
         probs = probs / probs.sum()
         
         return probs
+    
+    def _compute_probability_bounds(self):
+        """
+        Compute lower and upper probability bounds for uncertainty set
+        
+        Algorithm 3: Bounds under Incomplete Information
+        
+        Creates uncertainty set P ∈ [P̲, P̄] where:
+        - P̲(u) = max(0, P(u) - ε)
+        - P̄(u) = min(1, P(u) + ε)
+        
+        Then renormalize to ensure they sum to 1.
+        
+        Returns:
+        --------
+        probs_lower : array
+            Lower bound probabilities P̲
+        probs_upper : array
+            Upper bound probabilities P̄
+        """
+        eps = self.prob_uncertainty
+        
+        # Lower bounds
+        probs_lower = np.maximum(0, self.U_probs - eps)
+        probs_lower = probs_lower / probs_lower.sum()  # Renormalize
+        
+        # Upper bounds
+        probs_upper = np.minimum(1, self.U_probs + eps)
+        probs_upper = probs_upper / probs_upper.sum()  # Renormalize
+        
+        return probs_lower, probs_upper
     
     def structural_equation(self, X_prev, U_current, U_prev, intervention_now, t):
         """
@@ -288,6 +326,199 @@ class CausalOptimalStopping:
             print(f"Optimal policy computed for all states (t, X, already_intervened)")
             print(f"Ready to simulate paths and find τ* for each!\n")
     
+    def solve_backward_induction_with_bounds(self, X0=10, verbose=True):
+        """
+        Algorithm 3: Bounds under Incomplete Information
+        
+        Solve the optimal stopping problem when the transition model is uncertain.
+        Compute LOWER and UPPER bounds on E[Y] by considering worst/best-case 
+        probability distributions.
+        
+        Model uncertainty:
+        - Shock distribution: P ∈ [P̲, P̄] (probability uncertainty)
+        - Treatment effect: e ∈ [e-δ, e+δ] (effect uncertainty)
+        
+        Uses min-max dynamic programming:
+        - Lower bound V̲: assumes worst-case distributions
+        - Upper bound V̄: assumes best-case distributions
+        
+        Parameters:
+        -----------
+        X0 : int
+            Initial value of X₀
+        verbose : bool
+            Print progress
+        """
+        if verbose:
+            print(f"\n{'='*80}")
+            print("ALGORITHM 3: BOUNDS UNDER INCOMPLETE INFORMATION")
+            print(f"{'='*80}")
+            print(f"Computing value bounds with model uncertainty")
+            print(f"Initial state: X₀ = {X0}")
+            print(f"Probability uncertainty: ±{self.prob_uncertainty*100:.1f}%")
+            print(f"Treatment effect bounds: [{self.effect_lower:.2f}, {self.effect_upper:.2f}]")
+            print(f"\nComputing LOWER and UPPER bound value functions...\n")
+        
+        # Clear previous solutions
+        self.value_lower = {}
+        self.value_upper = {}
+        
+        # Stage T (final stage): Compute bounds on E[Y | X_final]
+        if verbose:
+            print(f"Stage t={self.time_grid[-1]:.1f}: Computing terminal value bounds...")
+        
+        for X_final in range(self.X_min, self.X_max + 1):
+            # Terminal value is deterministic (no uncertainty in outcome function)
+            expected_Y = self.get_expected_outcome(X_final)
+            
+            # Both bounds equal at terminal nodes
+            self.value_lower[(self.T, X_final, 0)] = expected_Y
+            self.value_lower[(self.T, X_final, 1)] = expected_Y
+            self.value_upper[(self.T, X_final, 0)] = expected_Y
+            self.value_upper[(self.T, X_final, 1)] = expected_Y
+        
+        # Backward induction with bounds
+        for t_idx in range(self.T - 1, -1, -1):
+            t_actual = self.time_grid[t_idx]
+            
+            if verbose:
+                print(f"\nStage t={t_actual:.1f}: Computing bounded policies...")
+            
+            for X_t in range(self.X_min, self.X_max + 1):
+                
+                # Case 1: Already intervened
+                cont_lower = self._compute_continuation_value_bounded(
+                    t_idx, X_t, already_intervened=True, bound_type='lower'
+                )
+                cont_upper = self._compute_continuation_value_bounded(
+                    t_idx, X_t, already_intervened=True, bound_type='upper'
+                )
+                
+                self.value_lower[(t_idx, X_t, 1)] = cont_lower
+                self.value_upper[(t_idx, X_t, 1)] = cont_upper
+                
+                # Case 2: Haven't intervened yet - compute both intervention and wait
+                # Lower bound: worst case
+                intervene_lower = self._compute_intervention_value_bounded(
+                    t_idx, X_t, bound_type='lower'
+                )
+                wait_lower = self._compute_continuation_value_bounded(
+                    t_idx, X_t, already_intervened=False, bound_type='lower'
+                )
+                
+                # Upper bound: best case
+                intervene_upper = self._compute_intervention_value_bounded(
+                    t_idx, X_t, bound_type='upper'
+                )
+                wait_upper = self._compute_continuation_value_bounded(
+                    t_idx, X_t, already_intervened=False, bound_type='upper'
+                )
+                
+                # Store bounds (max for action choice)
+                self.value_lower[(t_idx, X_t, 0)] = max(intervene_lower, wait_lower)
+                self.value_upper[(t_idx, X_t, 0)] = max(intervene_upper, wait_upper)
+        
+        if verbose:
+            print(f"\n{'='*80}")
+            print("ALGORITHM 3 COMPLETE!")
+            print(f"{'='*80}")
+            print(f"Computed LOWER and UPPER bounds for all states")
+            print(f"Bounds quantify uncertainty in optimal policy\n")
+    
+    def solve_robust_backward_induction(self, X0=10, verbose=True):
+        """
+        Algorithm 4: Bounds with Intervention (Robust Optimal Stopping)
+        
+        Combine optimal stopping (Algorithm 2) with incomplete information (Algorithm 3).
+        Derive ROBUST policies that work well even under model uncertainty.
+        
+        Robust decision rule:
+        - Intervene if: V̲_intervene > V̄_wait
+          (even worst-case intervention beats best-case waiting)
+        - Wait if: V̄_intervene < V̲_wait  
+          (even best-case intervention loses to worst-case waiting)
+        - Ambiguous otherwise
+        
+        This is like robust American option pricing under volatility uncertainty.
+        
+        Parameters:
+        -----------
+        X0 : int
+            Initial value of X₀
+        verbose : bool
+            Print progress
+        """
+        if verbose:
+            print(f"\n{'='*80}")
+            print("ALGORITHM 4: ROBUST OPTIMAL STOPPING WITH INTERVENTION")
+            print(f"{'='*80}")
+            print(f"Deriving robust policies under model uncertainty")
+            print(f"Initial state: X₀ = {X0}")
+            print(f"\nRobust decision rule:")
+            print(f"  - INTERVENE if V̲_intervene > V̄_wait (robust intervention)")
+            print(f"  - WAIT if V̄_intervene < V̲_wait (robust waiting)")
+            print(f"  - AMBIGUOUS otherwise (requires more information)\n")
+        
+        # First compute bounds (Algorithm 3)
+        self.solve_backward_induction_with_bounds(X0=X0, verbose=False)
+        
+        # Now derive robust policies
+        self.robust_policy = {}
+        
+        if verbose:
+            print("Deriving robust policies from bounds...\n")
+        
+        robust_intervene_count = 0
+        robust_wait_count = 0
+        ambiguous_count = 0
+        
+        for t_idx in range(self.T):
+            for X_t in range(self.X_min, self.X_max + 1):
+                
+                # Already intervened: no decision
+                self.robust_policy[(t_idx, X_t, 1)] = 'no_action'
+                
+                # Haven't intervened: apply robust decision rule
+                # Get bounds from Algorithm 3
+                intervene_lower = self._compute_intervention_value_bounded(
+                    t_idx, X_t, bound_type='lower'
+                )
+                intervene_upper = self._compute_intervention_value_bounded(
+                    t_idx, X_t, bound_type='upper'
+                )
+                wait_lower = self._compute_continuation_value_bounded(
+                    t_idx, X_t, already_intervened=False, bound_type='lower'
+                )
+                wait_upper = self._compute_continuation_value_bounded(
+                    t_idx, X_t, already_intervened=False, bound_type='upper'
+                )
+                
+                # Robust decision rule
+                if intervene_lower > wait_upper:
+                    # Worst-case intervention > best-case waiting → ROBUSTLY INTERVENE
+                    self.robust_policy[(t_idx, X_t, 0)] = 'INTERVENE'
+                    robust_intervene_count += 1
+                elif intervene_upper < wait_lower:
+                    # Best-case intervention < worst-case waiting → ROBUSTLY WAIT
+                    self.robust_policy[(t_idx, X_t, 0)] = 'wait'
+                    robust_wait_count += 1
+                else:
+                    # Ambiguous: bounds overlap
+                    self.robust_policy[(t_idx, X_t, 0)] = 'ambiguous'
+                    ambiguous_count += 1
+        
+        if verbose:
+            total = robust_intervene_count + robust_wait_count + ambiguous_count
+            print(f"{'='*80}")
+            print("ALGORITHM 4 COMPLETE!")
+            print(f"{'='*80}")
+            print(f"Robust policy statistics:")
+            print(f"  - Robustly INTERVENE: {robust_intervene_count}/{total} ({robust_intervene_count/total*100:.1f}%)")
+            print(f"  - Robustly WAIT: {robust_wait_count}/{total} ({robust_wait_count/total*100:.1f}%)")
+            print(f"  - AMBIGUOUS (need more info): {ambiguous_count}/{total} ({ambiguous_count/total*100:.1f}%)")
+            print(f"\nReady for robust simulation!\n")
+
+    
     def _compute_intervention_value(self, t, X_t):
         """
         Compute value of intervening NOW at time t with state X_t
@@ -376,6 +607,175 @@ class CausalOptimalStopping:
                 total_value += prob_t * prob_next * (self.discount * future_value)
         
         return total_value
+    
+    def _compute_intervention_value_bounded(self, t, X_t, bound_type='lower'):
+        """
+        Compute BOUNDED value of intervening (for Algorithm 3 & 4)
+        
+        PROPER MIN-MAX APPROACH:
+        - Lower bound: min over (treatment_effect, probability) of expected value
+        - Upper bound: max over (treatment_effect, probability) of expected value
+        
+        We compute 4 scenarios (2 effects × 2 prob distributions) and take min/max
+        
+        Parameters:
+        -----------
+        bound_type : str
+            'lower' for worst-case (pessimistic), 'upper' for best-case (optimistic)
+        """
+        t_next = t + 1
+        
+        # Try all combinations of uncertainties
+        scenarios = []
+        
+        for effect_mult in [1 - self.effect_uncertainty, 1 + self.effect_uncertainty]:
+            for use_lower_probs in [True, False]:
+                probs = self.U_probs_lower if use_lower_probs else self.U_probs_upper
+                
+                scenario_value = 0.0
+                
+                if t_next > self.T:
+                    # Terminal state
+                    for u_t, prob_t in zip(self.U_values, probs):
+                        X_final = self.structural_equation_bounded(
+                            X_t, u_t, None, intervention_now=True, t=t_next,
+                            effect_multiplier=effect_mult
+                        )
+                        if X_final == "DEATH":
+                            expected_Y = 0.0
+                        else:
+                            expected_Y = self.get_expected_outcome(X_final)
+                        scenario_value += prob_t * expected_Y
+                else:
+                    # Non-terminal
+                    for u_t, prob_t in zip(self.U_values, probs):
+                        for u_next, prob_next in zip(self.U_values, probs):
+                            if t == 0:
+                                X_next = self.structural_equation_bounded(
+                                    X_t, u_next, None, intervention_now=True, t=t_next,
+                                    effect_multiplier=effect_mult
+                                )
+                            else:
+                                X_next = self.structural_equation_bounded(
+                                    X_t, u_next, u_t, intervention_now=True, t=t_next,
+                                    effect_multiplier=effect_mult
+                                )
+                            
+                            if X_next == "DEATH":
+                                future_value = 0.0
+                            else:
+                                # Use same bound type for future
+                                if bound_type == 'lower':
+                                    future_value = self.value_lower.get((t_next, X_next, 1), 0)
+                                else:
+                                    future_value = self.value_upper.get((t_next, X_next, 1), 0)
+                            
+                            scenario_value += prob_t * prob_next * self.discount * future_value
+                
+                scenarios.append(scenario_value)
+        
+        # Take min or max over all scenarios
+        if bound_type == 'lower':
+            return min(scenarios)  # Worst case
+        else:
+            return max(scenarios)  # Best case
+    
+    def _compute_continuation_value_bounded(self, t, X_t, already_intervened, bound_type='lower'):
+        """
+        Compute BOUNDED value of continuing without intervening (for Algorithm 3 & 4)
+        
+        PROPER MIN-MAX APPROACH:
+        - Lower bound: min over probability distributions
+        - Upper bound: max over probability distributions
+        
+        Parameters:
+        -----------
+        bound_type : str
+            'lower' for worst-case, 'upper' for best-case
+        """
+        t_next = t + 1
+        
+        if t_next > self.T:
+            return self.get_expected_outcome(X_t)
+        
+        # Try both probability distributions
+        scenarios = []
+        
+        for use_lower_probs in [True, False]:
+            probs = self.U_probs_lower if use_lower_probs else self.U_probs_upper
+            
+            scenario_value = 0.0
+            
+            for u_t, prob_t in zip(self.U_values, probs):
+                for u_next, prob_next in zip(self.U_values, probs):
+                    # No intervention - standard structural equation
+                    if t == 0:
+                        X_next = self.structural_equation(X_t, u_next, None, intervention_now=False, t=t_next)
+                    else:
+                        X_next = self.structural_equation(X_t, u_next, u_t, intervention_now=False, t=t_next)
+                    
+                    if X_next == "DEATH":
+                        future_value = 0.0
+                    else:
+                        # Get bounded future value
+                        if bound_type == 'lower':
+                            if already_intervened:
+                                future_value = self.value_lower.get((t_next, X_next, 1), 0)
+                            else:
+                                future_value = self.value_lower.get((t_next, X_next, 0), 0)
+                        else:
+                            if already_intervened:
+                                future_value = self.value_upper.get((t_next, X_next, 1), 0)
+                            else:
+                                future_value = self.value_upper.get((t_next, X_next, 0), 0)
+                    
+                    scenario_value += prob_t * prob_next * self.discount * future_value
+            
+            scenarios.append(scenario_value)
+        
+        # Take min or max over scenarios
+        if bound_type == 'lower':
+            return min(scenarios)  # Worst case
+        else:
+            return max(scenarios)  # Best case
+    
+    def structural_equation_bounded(self, X_prev, U_current, U_prev, intervention_now, t, effect_multiplier=1.0):
+        """
+        Structural equation with BOUNDED treatment effect
+        
+        For Algorithm 3 & 4: treatment effect can be uncertain
+        effect_multiplier adjusts the treatment strength
+        
+        Parameters:
+        -----------
+        effect_multiplier : float
+            Multiplier for treatment effect (e.g., 0.8 or 1.2 for ±20% uncertainty)
+        """
+        optimal_X = 10
+        
+        # Base transition: X_t = X_{t-1} + U_{t-1} + U_t
+        X_new = float(X_prev)
+        
+        if U_prev is not None:
+            X_new += U_prev
+        X_new += U_current
+        
+        # Apply intervention if requested (with bounded effect)
+        if intervention_now:
+            adjusted_effect = self.treatment_effect * effect_multiplier
+            
+            if X_new < optimal_X:
+                X_new += adjusted_effect
+            elif X_new > optimal_X:
+                X_new -= adjusted_effect
+        
+        # Round and check boundaries
+        X_new = round(X_new)
+        
+        if X_new < self.X_min or X_new > self.X_max:
+            return "DEATH"
+        
+        return int(X_new)
     
     def simulate_path(self, X0=10, seed=None):
         """
@@ -554,35 +954,6 @@ class CausalOptimalStopping:
         deaths = sum(1 for r in results if 'died' in r['info'].get('reason', ''))
         never_needed = sum(1 for r in results if r['info'].get('reason') == 'never_optimal')
         
-        print(f"{'='*80}")
-        print("SUMMARY STATISTICS (CONTINUOUS TIME)")
-        print(f"{'='*80}")
-        print(f"  Total Paths: {num_paths}")
-        print(f"  Paths with Intervention: {len(intervention_times)} ({len(intervention_times)/num_paths*100:.1f}%)")
-        print(f"  Paths without Intervention: {num_paths - len(intervention_times)}")
-        print(f"    - Died without intervention: {deaths}")
-        print(f"    - Never needed: {never_needed}")
-        
-        if intervention_times:
-            print(f"\n  Intervention Times (continuous):")
-            print(f"    Average τ*: {np.mean(intervention_times):.2f}")
-            print(f"    Earliest: t={np.min(intervention_times):.2f}")
-            print(f"    Latest: t={np.max(intervention_times):.2f}")
-            print(f"    Std deviation: {np.std(intervention_times):.2f}")
-            
-            # Distribution by bins
-            print(f"\n  Distribution of τ* (by integer bins):")
-            for bin_start in range(int(self.time_grid[0]), int(self.time_grid[-1]) + 1):
-                count = sum(1 for t in intervention_times if bin_start <= t < bin_start + 1)
-                if count > 0:
-                    print(f"    t ∈ [{bin_start}, {bin_start+1}): {count} paths ({count/len(intervention_times)*100:.1f}%)")
-            
-            # Show actual times (first 10)
-            print(f"\n  Actual intervention times (first {min(10, len(intervention_times))}):")
-            print(f"    {[f'{t:.2f}' for t in sorted(intervention_times)[:10]]}")
-        
-        print(f"{'='*80}\n")
-        
         return results
     
     def print_policy_summary(self, X0=10):
@@ -627,88 +998,96 @@ class CausalOptimalStopping:
 
 # Example usage
 if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("CAUSAL OPTIMAL STOPPING: Finding Optimal Intervention Times")
-    print("CONTINUOUS TIME VERSION (dt=0.2)")
-    print("="*80)
-    print("\n🩺 Blood Pressure Analogy:")
-    print("  X = health markers (1-20, higher is better)")
-    print("  U = random daily shocks (-3 to +3)")
-    print("  A = medication (0=not taking, 1=taking)")
-    print("  Y = outcome (1=healthy, 0=adverse event)")
-    print("  Goal: Find optimal time τ* to start medication")
-    print("  τ* can be ANY time (e.g., 2.4 days, 4.8 days, etc.)\n")
+    # ========================================================================
+    # PART 1: ALGORITHMS 1 & 2 (Standard Case - Known Model)
+    # ========================================================================
     
-    # Initialize the model with CONTINUOUS TIME (dt=0.2)
-    model = CausalOptimalStopping(
+    model_standard = CausalOptimalStopping(
         n_endogenous=7,
         n_exogenous=6,
-        T=6.0,             # Total time (float)
+        T=6,  # Discrete: t = 0, 1, 2, 3, 4, 5, 6
         X_min=1,
         X_max=20,
         U_min=-3,
         U_max=3,
-        treatment_effect=4,    # Strong treatment effect
-        Y_threshold=10,        # Not used anymore, kept for compatibility
+        treatment_effect=4,
+        Y_threshold=10,
         discount=0.95,
-        dt=0.2                 # Time step = 0.2 (5 steps per unit time)
+        dt=1.0,  # Discrete time steps
+        uncertainty_mode='none'
     )
     
-    # Solve using backward induction (Dynamic Programming!)
-    model.solve_backward_induction(X0=10, verbose=True)
+    # Algorithm 2: Optimal Stopping (Algorithm 1 is implicit)
+    model_standard.solve_backward_induction(X0=10, verbose=False)
     
-    # Show the optimal policy
-    model.print_policy_summary(X0=10)
+    # Simulate paths to find τ* values
+    results_standard = model_standard.simulate_multiple_paths(X0=10, num_paths=15, verbose=False)
     
-    # Simulate paths and find τ* for each
-    results = model.simulate_multiple_paths(X0=10, num_paths=15, verbose=True)
+    # ========================================================================
+    # PART 2: ALGORITHMS 3 & 4 (Robust Case - Uncertain Model)
+    # ========================================================================
     
-    print("\n" + "="*80)
-    print("KEY INSIGHTS")
-    print("="*80)
-    print("""
-🎯 This adapts the American Put Option framework for causal inference!
-
-1. BACKWARD INDUCTION (Dynamic Programming):
-   - Work backwards from outcome Y
-   - At each state (t, X, A), compute:
-     * Value of intervening now
-     * Value of waiting
-   - Take the maximum (Bellman equation)
-
-2. OPTIMAL STOPPING PROBLEM:
-   - Like exercising an American put, but for causal interventions
-   - Each path has its own τ* (optimal intervention time)
-   - Some paths never need intervention
-
-3. CAUSAL STRUCTURE:
-   - Each U_i affects X_i and X_{i+1} (persistent shocks)
-   - Treatment A causally affects all future X values
-   - Y is determined by final X₆ being in healthy range [7, 14]
-
-4. STATE-DEPENDENT TREATMENT:
-   - If X < 10: treatment INCREASES X (prevents death from going too low)
-   - If X > 10: treatment DECREASES X (prevents death from going too high)
-   - Optimal X ≈ 10 (middle of safe zone)
-
-5. DEATH BOUNDARIES:
-   - X < 1: DEATH (too low)
-   - X > 20: DEATH (too high)
-   - Treatment must balance keeping X in safe zone [1, 20]
-
-6. PATH-DEPENDENT DECISIONS:
-   - Different realizations → different optimal times
-   - Low X paths: Intervene early to boost up
-   - High X paths: Intervene to push down (or never if stable)
-   - Medium X paths: Wait and see trajectory
-   - Just like the exercise boundary in American options!
-
-🩺 Blood Pressure Interpretation:
-   - Monitor your health markers (X) over time
-   - Random shocks (U) affect your trajectory  
-   - Optimal policy tells you when to start medication
-   - Treatment is smart: raises low BP, lowers high BP
-   - Goal: Keep X in healthy zone, avoid death from extremes
-   - Maximize probability of good outcome (Y=1)
-    """)
-    print("="*80)
+    model_robust = CausalOptimalStopping(
+        n_endogenous=7,
+        n_exogenous=6,
+        T=6,  # Discrete: t = 0, 1, 2, 3, 4, 5, 6
+        X_min=1,
+        X_max=20,
+        U_min=-3,
+        U_max=3,
+        treatment_effect=4,
+        Y_threshold=10,
+        discount=0.95,
+        dt=1.0,  # Discrete time steps
+        uncertainty_mode='robust',
+        prob_uncertainty=0.15,
+        effect_uncertainty=0.25
+    )
+    
+    # Algorithm 4: Robust Optimal Stopping (internally calls Algorithm 3)
+    model_robust.solve_robust_backward_induction(X0=10, verbose=False)
+    
+    # ========================================================================
+    # RESULTS OUTPUT
+    # ========================================================================
+    
+    print("\n=== ALGORITHM 1: BACKWARD EXPECTATION ===")
+    print("Computing E[Y] without intervention:")
+    # Show E[Y] at different starting states
+    for t_idx, X in [(0, 10), (3, 10), (5, 10)]:
+        t_actual = int(model_standard.time_grid[t_idx])
+        # Value when we've already intervened (so no more decision to make)
+        value_no_intervention = model_standard.value_function.get((t_idx, X, 1), 
+                                   model_standard.value_function.get((t_idx, X, 0), 0))
+        print(f"E[Y | X_{t_actual}={X}, no intervention]: {value_no_intervention:.4f}")
+    
+    print("\n=== ALGORITHM 2: STANDARD OPTIMAL STOPPING ===")
+    print(f"Paths simulated: {len(results_standard)}")
+    
+    paths_with_intervention = sum(1 for r in results_standard if r['tau_star'] is not None)
+    intervention_times = [r['tau_star'] for r in results_standard if r['tau_star'] is not None]
+    
+    print(f"Paths with intervention: {paths_with_intervention}/{len(results_standard)}")
+    
+    if intervention_times:
+        print(f"Average τ*: {np.mean(intervention_times):.2f}")
+        print(f"Range: [{int(np.min(intervention_times))}, {int(np.max(intervention_times))}]")
+        print(f"Optimal intervention maximizes E[Y | do(A=1 at τ*)]")
+    
+    print(f"\n=== ALGORITHM 3: BOUNDS ===")
+    for t_idx, X in [(0, 10), (3, 10), (6, 10)]:
+        t_actual = int(model_robust.time_grid[t_idx])
+        lower = model_robust.value_lower.get((t_idx, X, 0), 0)
+        upper = model_robust.value_upper.get((t_idx, X, 0), 0)
+        print(f"t={t_actual}, X={X}: E[Y] ∈ [{lower:.4f}, {upper:.4f}]")
+    
+    print(f"\n=== ALGORITHM 4: ROBUST POLICIES ===")
+    intervene_count = sum(1 for p in model_robust.robust_policy.values() if p == 'INTERVENE')
+    wait_count = sum(1 for p in model_robust.robust_policy.values() if p == 'wait')
+    ambiguous_count = sum(1 for p in model_robust.robust_policy.values() if p == 'ambiguous')
+    total = len(model_robust.robust_policy)
+    
+    print(f"Robustly INTERVENE: {intervene_count}/{total} ({intervene_count/total*100:.1f}%)")
+    print(f"Robustly WAIT: {wait_count}/{total} ({wait_count/total*100:.1f}%)")
+    print(f"AMBIGUOUS: {ambiguous_count}/{total} ({ambiguous_count/total*100:.1f}%)")
+    print()
