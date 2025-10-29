@@ -1062,6 +1062,47 @@ if __name__ == "__main__":
         print(f"E[Y | X_{t_actual}={X}, no intervention]: {value_no_intervention:.4f}")
     
     print("\n=== ALGORITHM 2: STANDARD OPTIMAL STOPPING ===")
+    
+    # Decision Rule
+    print("\nDecision Rule:")
+    print("  V_intervene(t,X) = E[Y | do(A=1 at t), X_t=X]")
+    print("  V_wait(t,X) = E[max{intervene later, never intervene} | X_t=X]")
+    print("  ")
+    print("  Intervene at (t,X) ⟺ V_intervene(t,X) ≥ V_wait(t,X)")
+    
+    # Extract intervention ranges
+    print("\nIntervention Ranges:")
+    for t_idx in range(len(model_standard.time_grid)):
+        t_actual = int(model_standard.time_grid[t_idx])
+        intervene_states = []
+        
+        for X in range(model_standard.X_min, model_standard.X_max + 1):
+            policy = model_standard.policy.get((t_idx, X, 0), 'unknown')
+            if policy == 'INTERVENE':
+                intervene_states.append(X)
+        
+        # Convert to ranges
+        if intervene_states:
+            ranges = []
+            start = intervene_states[0]
+            end = intervene_states[0]
+            
+            for i in range(1, len(intervene_states)):
+                if intervene_states[i] == end + 1:
+                    end = intervene_states[i]
+                else:
+                    ranges.append(f"[{start},{end}]")
+                    start = intervene_states[i]
+                    end = intervene_states[i]
+            ranges.append(f"[{start},{end}]")
+            
+            print(f"t={t_actual}: Intervene when X ∈ {' ∪ '.join(ranges)}")
+            print(f"     Rationale: V_intervene(t,X) ≥ V_wait(t,X) for these X values")
+        else:
+            print(f"t={t_actual}: Never intervene (always better to wait)")
+    
+    # Simulation results
+    print(f"\nSimulation Results:")
     print(f"Paths simulated: {len(results_standard)}")
     
     paths_with_intervention = sum(1 for r in results_standard if r['tau_star'] is not None)
@@ -1075,18 +1116,102 @@ if __name__ == "__main__":
         print(f"Optimal intervention maximizes E[Y | do(A=1 at τ*)]")
     
     print(f"\n=== ALGORITHM 3: BOUNDS ===")
+    
+    # Decision Rule for Bounds
+    print("\nDecision Rule:")
+    print("  V̲_intervene(t,X) = min over uncertainty scenarios of E[Y | do(A=1 at t)]")
+    print("  V̄_intervene(t,X) = max over uncertainty scenarios of E[Y | do(A=1 at t)]")
+    print("  V̲_wait(t,X) = min over uncertainty scenarios of E[wait and intervene optimally later]")
+    print("  V̄_wait(t,X) = max over uncertainty scenarios of E[wait and intervene optimally later]")
+    print("  ")
+    print("  Provides bounds: E[Y] ∈ [V̲(t,X), V̄(t,X)]")
+    
+    print("\nValue Bounds at Key States:")
     for t_idx, X in [(0, 10), (3, 10), (6, 10)]:
         t_actual = int(model_robust.time_grid[t_idx])
         lower = model_robust.value_lower.get((t_idx, X, 0), 0)
         upper = model_robust.value_upper.get((t_idx, X, 0), 0)
         print(f"t={t_actual}, X={X}: E[Y] ∈ [{lower:.4f}, {upper:.4f}]")
     
-    print(f"\n=== ALGORITHM 4: ROBUST POLICIES ===")
+    print(f"\n=== ALGORITHM 4: ROBUST OPTIMAL STOPPING ===")
+    
+    # Decision Rule for Robust
+    print("\nDecision Rule:")
+    print("  V̲_intervene(t,X) = worst-case E[Y] if intervene now")
+    print("  V̄_intervene(t,X) = best-case E[Y] if intervene now")
+    print("  V̲_wait(t,X) = worst-case E[Y] if wait")
+    print("  V̄_wait(t,X) = best-case E[Y] if wait")
+    print("  ")
+    print("  Robustly INTERVENE if: V̲_intervene(t,X) > V̄_wait(t,X)")
+    print("     (even worst-case intervention beats best-case waiting)")
+    print("  Robustly WAIT if: V̄_intervene(t,X) < V̲_wait(t,X)")
+    print("     (even best-case intervention loses to worst-case waiting)")
+    print("  AMBIGUOUS otherwise")
+    print("     (bounds overlap, need more information)")
+    
+    # Extract robust intervention ranges
+    print("\nRobust Intervention Ranges:")
+    for t_idx in range(len(model_robust.time_grid)):
+        t_actual = int(model_robust.time_grid[t_idx])
+        intervene_states = []
+        wait_states = []
+        ambiguous_states = []
+        
+        for X in range(model_robust.X_min, model_robust.X_max + 1):
+            policy = model_robust.robust_policy.get((t_idx, X, 0), 'unknown')
+            if policy == 'INTERVENE':
+                intervene_states.append(X)
+            elif policy == 'wait':
+                wait_states.append(X)
+            elif policy == 'ambiguous':
+                ambiguous_states.append(X)
+        
+        # Convert to ranges for intervene
+        if intervene_states:
+            ranges = []
+            start = intervene_states[0]
+            end = intervene_states[0]
+            
+            for i in range(1, len(intervene_states)):
+                if intervene_states[i] == end + 1:
+                    end = intervene_states[i]
+                else:
+                    ranges.append(f"[{start},{end}]")
+                    start = intervene_states[i]
+                    end = intervene_states[i]
+            ranges.append(f"[{start},{end}]")
+            
+            print(f"t={t_actual}: Robustly INTERVENE when X ∈ {' ∪ '.join(ranges)}")
+        
+        # Convert to ranges for wait
+        if wait_states:
+            ranges = []
+            start = wait_states[0]
+            end = wait_states[0]
+            
+            for i in range(1, len(wait_states)):
+                if wait_states[i] == end + 1:
+                    end = wait_states[i]
+                else:
+                    ranges.append(f"[{start},{end}]")
+                    start = wait_states[i]
+                    end = wait_states[i]
+            ranges.append(f"[{start},{end}]")
+            
+            print(f"t={t_actual}: Robustly WAIT when X ∈ {' ∪ '.join(ranges)}")
+        
+        # Count ambiguous
+        if ambiguous_states:
+            print(f"t={t_actual}: AMBIGUOUS for {len(ambiguous_states)} states (need more info)")
+    
+    # Summary statistics
+    print("\nRobust Policy Summary:")
     intervene_count = sum(1 for p in model_robust.robust_policy.values() if p == 'INTERVENE')
     wait_count = sum(1 for p in model_robust.robust_policy.values() if p == 'wait')
     ambiguous_count = sum(1 for p in model_robust.robust_policy.values() if p == 'ambiguous')
     total = len(model_robust.robust_policy)
     
+    print(f"Total states: {total}")
     print(f"Robustly INTERVENE: {intervene_count}/{total} ({intervene_count/total*100:.1f}%)")
     print(f"Robustly WAIT: {wait_count}/{total} ({wait_count/total*100:.1f}%)")
     print(f"AMBIGUOUS: {ambiguous_count}/{total} ({ambiguous_count/total*100:.1f}%)")
