@@ -283,7 +283,6 @@ class OUNoise:
         self.state += dx
         return self.state * decay
 
-
 class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = deque(maxlen=capacity)
@@ -296,7 +295,6 @@ class ReplayBuffer:
     
     def __len__(self):
         return len(self.buffer)
-
 
 class RewardNormalizer:
     def __init__(self, clip_range=10.0):
@@ -322,7 +320,6 @@ class RewardNormalizer:
         else:
             normalized = reward
         return np.clip(normalized, -self.clip_range, self.clip_range)
-
 
 #==================================#
 # DDPG AGENT
@@ -397,7 +394,6 @@ class UniversalDDPGAgent:
         for target_param, param in zip(self.critic_target.parameters(), self.critic.parameters()):
             target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
 
-
 #==================================#
 # STATE AND REWARD
 #==================================#
@@ -406,7 +402,6 @@ def construct_state(S, t):
     state_vec[0] = S / S0
     state_vec[1] = t / T_steps
     return state_vec
-
 
 def compute_reward_super_replication_incomplete(hedge, S, t, lsmc_estimator, is_terminal, state_idx=None):
     hedge = np.atleast_1d(hedge)
