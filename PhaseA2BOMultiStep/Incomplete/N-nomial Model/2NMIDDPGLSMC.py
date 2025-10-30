@@ -8,66 +8,44 @@ import random
 from scipy.optimize import minimize
 import time
 
-# ============================================================
-# CONFIGURATION - N-NOMIAL INCOMPLETE SUPER-REPLICATION
-# ============================================================
 S0 = 100.0
-r = 0.0 
 K = 100.0
 T_steps = 3
-dt = 1.0
-
-# N-NOMIAL INCOMPLETE MARKET PARAMETERS
-N = 4                    # Number of states
-NUM_BINARIES = 2         # INCOMPLETE: 2 binaries for 4 states
-
+N = 4 
+NUM_BINARIES = 2 
 sigma = 0.25
 
-# LSMC parameters
 NUM_SIMULATIONS = 20000
 POLYNOMIAL_DEGREE = 4
 REGRESSION_ALPHA = 0.1
-
-# SUPER-REPLICATION: No artificial buffer
-CONSERVATISM_FACTOR = 1.00
-
-# RL hyperparameters
 BASE_ACTOR_LR = 0.00005
 BASE_CRITIC_LR = 0.00015
-
 ACTION_SCALE = None
-
-# SUPER-REPLICATION PENALTIES
 SHORTFALL_PENALTY = 20000000
 EXCESS_PENALTY = 50
 COST_WEIGHT = 10000
-
-# Training configuration
 base_episodes = 4000000
-TOTAL_EPISODES = base_episodes
 NUM_ITERATIONS = 16
 BATCH_SIZE = 128
 GAMMA = 0.99  
 TAU = 0.003
 BUFFER_SIZE = 1000000
 HIDDEN_DIM = 512
-
-# Improvement parameters
 LR_DECAY = 0.96
 NOISE_DECAY = 0.75
-EARLY_STOP_PATIENCE = 7
+EARLY_STOP_PATIENCE = 5
 
 print("=" * 60)
 print(f"N-NOMIAL INCOMPLETE SUPER-REPLICATION (T={T_steps}, N={N})")
 print("=" * 60)
-print(f"Market: {N} states, {NUM_BINARIES} binaries, r={r}")
+print(f"Market: {N} states, {NUM_BINARIES} binaries")
 print("=" * 60)
 
-
-# ============================================================
+#==================================#
 # N-NOMIAL PROBABILITIES AND MULTIPLIERS (EQUAL PROBABILITIES)
-# ============================================================
-def calculate_n_nomial_equal_probabilities(S0, N, r, dt, sigma):
+#==================================#
+
+def calculate_n_nomial_equal_probabilities(N, sigma):
     """
     Equal probabilities: 1/N for each state
     Multipliers symmetric around middle
@@ -81,33 +59,32 @@ def calculate_n_nomial_equal_probabilities(S0, N, r, dt, sigma):
         multipliers = np.zeros(N)
         multipliers[middle_idx] = 1.0
         
-        step = sigma * np.sqrt(dt * N)
+        step = sigma * np.sqrt(N)
         for i in range(middle_idx):
             multipliers[i] = np.exp(step * (middle_idx - i))
             multipliers[N - 1 - i] = np.exp(-step * (middle_idx - i))
     else:  # Even N
         multipliers = np.zeros(N)
-        step = sigma * np.sqrt(dt * N)
+        step = sigma * np.sqrt(N)
         for i in range(N):
             multipliers[i] = np.exp(step * ((N - 1) / 2 - i))
     
     # Verify martingale with r=0
     expected_mult = np.sum(probabilities * multipliers)
-    expected_growth = np.exp(r * dt)
     
     print(f"\nProbabilities: {probabilities}")
     print(f"Multipliers: {multipliers}")
-    print(f"Expected multiplier: {expected_mult:.6f} (target: {expected_growth:.6f})")
+    print(f"Expected multiplier: {expected_mult:.6f}")
     
     return probabilities, multipliers
 
+probabilities, multipliers = calculate_n_nomial_equal_probabilities(N, sigma)
 
-probabilities, multipliers = calculate_n_nomial_equal_probabilities(S0, N, r, dt, sigma)
 
+#==================================#
+# PAYOFF MATRIX
+#==================================#
 
-# ============================================================
-# BINARY PAYOFF MATRIX (SEQUENTIAL PARTITIONING)
-# ============================================================
 def create_payoff_matrix(N, num_binaries):
     payoff_matrix = np.zeros((N, num_binaries))
     for i in range(num_binaries - 1):
@@ -116,13 +93,12 @@ def create_payoff_matrix(N, num_binaries):
         payoff_matrix[i, num_binaries - 1] = 1
     return payoff_matrix
 
-
 payoff_matrix = create_payoff_matrix(N, NUM_BINARIES)
 
 
-# ============================================================
+#==================================#
 # UTILITIES
-# ============================================================
+#==================================#
 def create_polynomial_features(X, degree):
     X = np.array(X).reshape(-1, 1)
     features = np.ones((X.shape[0], degree + 1))
@@ -150,16 +126,15 @@ class RidgeRegression:
         return X @ self.coef_
 
 
-# ============================================================
+#==================================#
 # PATH SIMULATION
-# ============================================================
+#==================================#
 class NnomialPathSimulator:
-    def __init__(self, S0, multipliers, probabilities, T_steps, dt):
+    def __init__(self, S0, multipliers, probabilities, T_steps):
         self.S0 = S0
         self.multipliers = multipliers
         self.probabilities = probabilities
         self.T_steps = T_steps
-        self.dt = dt
         self.N = len(multipliers)
     
     def simulate_paths(self, num_paths):
@@ -185,9 +160,9 @@ class NnomialPathSimulator:
         return paths
 
 
-# ============================================================
+#==================================#
 # LSMC ESTIMATOR
-# ============================================================
+#==================================#
 class LSMCEstimator:
     def __init__(self, polynomial_degree=3, alpha=0.1, conservatism=1.0):
         self.poly_degree = polynomial_degree
@@ -195,8 +170,8 @@ class LSMCEstimator:
         self.conservatism = conservatism
         self.continuation_models = {}
         self.T_steps = T_steps
-    
-    def estimate_continuation_values(self, paths, r, dt):
+
+    def estimate_continuation_values(self, paths):
         for path in paths:
             path[-1]['value'] = path[-1]['payoff']
         
@@ -204,7 +179,7 @@ class LSMCEstimator:
             X, y = [], []
             for path in paths:
                 X.append(path[t]['S'])
-                y.append(np.exp(-r * dt) * path[t+1]['value'])
+                y.append(path[t+1]['value'])
             
             X_poly = create_polynomial_features(X, self.poly_degree)
             model = RidgeRegression(alpha=self.alpha).fit(X_poly, y)
@@ -233,10 +208,9 @@ class LSMCEstimator:
             else:
                 return [max(0, v) for v in base_values]
 
-
-# ============================================================
+#==================================#
 # NEURAL NETWORKS
-# ============================================================
+#==================================#
 class UniversalActor(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim, action_scale):
         super(UniversalActor, self).__init__()
@@ -262,7 +236,6 @@ class UniversalActor(nn.Module):
         x = F.softplus(self.fc4(x)) * self.action_scale
         return x
 
-
 class UniversalCritic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim):
         super(UniversalCritic, self).__init__()
@@ -286,11 +259,10 @@ class UniversalCritic(nn.Module):
         x = torch.relu(self.ln3(self.fc3(x)))
         x = self.fc4(x)
         return x
-
-
-# ============================================================
+    
+#==================================#
 # DDPG COMPONENTS
-# ============================================================
+#==================================#
 class OUNoise:
     def __init__(self, action_dim, mu=0, theta=0.15, sigma=0.20):
         self.action_dim = action_dim
@@ -352,9 +324,9 @@ class RewardNormalizer:
         return np.clip(normalized, -self.clip_range, self.clip_range)
 
 
-# ============================================================
+#==================================#
 # DDPG AGENT
-# ============================================================
+#==================================#
 class UniversalDDPGAgent:
     def __init__(self, state_dim, action_dim, hidden_dim, action_scale):
         self.actor = UniversalActor(state_dim, action_dim, hidden_dim, action_scale)
@@ -426,9 +398,9 @@ class UniversalDDPGAgent:
             target_param.data.copy_(TAU * param.data + (1.0 - TAU) * target_param.data)
 
 
-# ============================================================
+#==================================#
 # STATE AND REWARD
-# ============================================================
+#==================================#
 def construct_state(S, t):
     state_vec = np.zeros(2)
     state_vec[0] = S / S0
@@ -474,17 +446,17 @@ def compute_reward_super_replication_incomplete(hedge, S, t, lsmc_estimator, is_
     return np.clip(reward, -10000000, 0), shortfall, cost, excess
 
 
-# ============================================================
+#==================================#
 # TRAINING LOOP
-# ============================================================
+#==================================#
 def train_super_replication():
     global ACTION_SCALE
     
     # Phase 1: Compute ACTION_SCALE
-    simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps, dt)
+    simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps)
     paths_temp = simulator.simulate_paths(5000)
-    lsmc_temp = LSMCEstimator(POLYNOMIAL_DEGREE, REGRESSION_ALPHA, CONSERVATISM_FACTOR)
-    paths_temp = lsmc_temp.estimate_continuation_values(paths_temp, r, dt)
+    lsmc_temp = LSMCEstimator(POLYNOMIAL_DEGREE, REGRESSION_ALPHA)
+    paths_temp = lsmc_temp.estimate_continuation_values(paths_temp)
     
     max_target = 0
     for path in paths_temp[:1000]:
@@ -497,7 +469,7 @@ def train_super_replication():
     print("=" * 60)
     
     # Phase 2: Training
-    lsmc_estimator = LSMCEstimator(POLYNOMIAL_DEGREE, REGRESSION_ALPHA, CONSERVATISM_FACTOR)
+    lsmc_estimator = LSMCEstimator(POLYNOMIAL_DEGREE, REGRESSION_ALPHA)
     agent = UniversalDDPGAgent(state_dim=2, action_dim=NUM_BINARIES, hidden_dim=HIDDEN_DIM, action_scale=ACTION_SCALE)
     reward_normalizer = RewardNormalizer(clip_range=10.0)
     
@@ -522,10 +494,10 @@ def train_super_replication():
         agent.noise.set_sigma(agent.noise.initial_sigma * iteration_noise_scale)
         
         paths = simulator.simulate_paths(NUM_SIMULATIONS)
-        paths = lsmc_estimator.estimate_continuation_values(paths, r, dt)
+        paths = lsmc_estimator.estimate_continuation_values(paths)
         
         print("Training...")
-        episodes_this_iter = TOTAL_EPISODES // NUM_ITERATIONS
+        episodes_this_iter = base_episodes // NUM_ITERATIONS
         reward_history = []
         
         for episode in range(episodes_this_iter):
@@ -585,7 +557,7 @@ def train_super_replication():
         print(f"{'='*60}\n")
         
         eval_paths = simulator.simulate_paths(1000)
-        eval_paths = lsmc_estimator.estimate_continuation_values(eval_paths, r, dt)
+        eval_paths = lsmc_estimator.estimate_continuation_values(eval_paths)
         
         total_shortfall = 0
         total_excess = 0
@@ -647,17 +619,17 @@ def train_super_replication():
     return agent, lsmc_estimator
 
 
-# ============================================================
+#==================================#
 # FINAL EVALUATION
-# ============================================================
+#==================================#
 def final_evaluation(agent, lsmc_estimator):
     print("\n" + "=" * 60)
     print("FINAL COMPREHENSIVE EVALUATION")
     print("=" * 60)
     
-    simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps, dt)
+    simulator = NnomialPathSimulator(S0, multipliers, probabilities, T_steps)
     eval_paths = simulator.simulate_paths(10000)
-    eval_paths = lsmc_estimator.estimate_continuation_values(eval_paths, r, dt)
+    eval_paths = lsmc_estimator.estimate_continuation_values(eval_paths)
     
     # Collect unique nodes and hedge positions
     node_hedges = {}
@@ -800,9 +772,9 @@ def final_evaluation(agent, lsmc_estimator):
     print(f"{'='*60}")
 
 
-# ============================================================
+#==================================#
 # MAIN EXECUTION
-# ============================================================
+#==================================#
 if __name__ == "__main__":
     total_start = time.time()
     
