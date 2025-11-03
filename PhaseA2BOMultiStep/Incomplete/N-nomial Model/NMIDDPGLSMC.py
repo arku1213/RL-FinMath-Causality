@@ -10,10 +10,10 @@ import time
 
 S0 = 100.0
 K = 100.0
-T_steps = 3
+T_steps = 4
 N = 4 
 NUM_BINARIES = 2 
-sigma = 0.25
+sigma = 0.20
 
 NUM_SIMULATIONS = 20000
 POLYNOMIAL_DEGREE = 4
@@ -48,7 +48,7 @@ print("=" * 60)
 def calculate_n_nomial_equal_probabilities(N, sigma):
     """
     Equal probabilities: 1/N for each state
-    Multipliers symmetric around middle
+    Multipliers symmetric around middle, normalized to E[mult]=1.0
     """
     # Equal probabilities
     probabilities = np.ones(N) / N
@@ -69,17 +69,18 @@ def calculate_n_nomial_equal_probabilities(N, sigma):
         for i in range(N):
             multipliers[i] = np.exp(step * ((N - 1) / 2 - i))
     
-    # Verify martingale with r=0
-    expected_mult = np.sum(probabilities * multipliers)
+    # Normalize to force E[multiplier] = 1.0
+    expected_before = np.sum(probabilities * multipliers)
+    multipliers = multipliers / expected_before
+    expected_after = np.sum(probabilities * multipliers)  # ← Calculate AFTER
     
     print(f"\nProbabilities: {probabilities}")
     print(f"Multipliers: {multipliers}")
-    print(f"Expected multiplier: {expected_mult:.6f}")
-    
+    print(f"Normalized expected multiplier: {expected_after:.6f} ✓")
+
     return probabilities, multipliers
 
 probabilities, multipliers = calculate_n_nomial_equal_probabilities(N, sigma)
-
 
 #==================================#
 # PAYOFF MATRIX
