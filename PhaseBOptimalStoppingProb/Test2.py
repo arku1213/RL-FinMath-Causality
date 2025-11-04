@@ -6,16 +6,25 @@ class CausalOptimalStopping:
     1. Standard Optimal Stopping
     2. Bounds under Incomplete Information
     3. Robust Optimal Stopping
+    
+    UPDATES:
+    - U now includes 0: U ∈ {-3, -2, -1, 0, 1, 2, 3} (7 states)
+    - Asymmetric U distribution (negative bias)
+    - Intervention pulls toward center (no specific "healthy range")
+    - Binary outcome Y: Y=0 for extreme X₆, Y=1 otherwise
+    - Output shows ALL states (280 per time period)
     """
     
     def __init__(self, X0=10, prob_uncertainty=0.15, intervention_uncertainty=0.25):
         self.X0 = X0
         self.X_min, self.X_max = 1, 20
-        self.healthy_low, self.healthy_high = 7, 14
-        self.intervention_low, self.intervention_high = 10, 12
         
-        # U values (no zero!)
-        self.U_values = [-3, -2, -1, 1, 2, 3]
+        # No more "healthy range" - intervention pulls toward center
+        self.intervention_center = 10
+        self.intervention_strength = 0.7  # How much to pull toward center
+        
+        # U values - NOW INCLUDING 0
+        self.U_values = [-3, -2, -1, 0, 1, 2, 3]
         self.U_probs = self._compute_U_probabilities()
         
         # Uncertainty bounds
@@ -33,8 +42,21 @@ class CausalOptimalStopping:
         self.robust_policy = {}          # Robust Optimal Stopping
         
     def _compute_U_probabilities(self):
-        probs = np.array([np.exp(-0.5 * (u ** 2)) for u in self.U_values])
-        return probs / probs.sum()
+        """
+        Asymmetric distribution biased toward negative shocks
+        
+        U = -3:  5%
+        U = -2: 15%
+        U = -1: 30%  } 50% negative
+        U =  0: 20%
+        U =  1: 20%  } 30% positive
+        U =  2:  8%
+        U =  3:  2%
+        
+        Expected value ≈ -0.5 (negative bias)
+        """
+        probs = np.array([0.05, 0.15, 0.30, 0.20, 0.20, 0.08, 0.02])
+        return probs / probs.sum()  # Ensure normalization
     
     def _compute_probability_bounds(self):
         eps = self.prob_uncertainty
@@ -44,44 +66,57 @@ class CausalOptimalStopping:
         probs_upper = probs_upper / probs_upper.sum()
         return probs_lower, probs_upper
     
-    def transition(self, X, U_current, U_next, intervene=False, intervention_range=None):
+    def apply_intervention(self, X):
+        """
+        Intervention pulls X toward center without a specific "healthy range"
+        
+        Formula: X_new = (1 - α) * X + α * center
+        where α = intervention_strength = 0.7
+        
+        Then clip to safe bounds [3, 17]
+        """
+        X_pulled = (1 - self.intervention_strength) * X + self.intervention_strength * self.intervention_center
+        X_intervened = int(np.round(X_pulled))
+        X_intervened = np.clip(X_intervened, 3, 17)
+        return X_intervened
+    
+    def transition(self, X, U_current, U_next, intervene=False, intervention_params=None):
+        """
+        State transition with optional intervention
+        
+        If intervene=True: Apply intervention first, then transition
+        """
         if intervene:
-            if intervention_range is None:
-                X = np.clip(X, self.intervention_low, self.intervention_high)
+            if intervention_params is None:
+                X = self.apply_intervention(X)
             else:
-                X = np.clip(X, intervention_range[0], intervention_range[1])
+                # For robust analysis with uncertainty
+                center, strength = intervention_params
+                X_pulled = (1 - strength) * X + strength * center
+                X = int(np.round(X_pulled))
+                X = np.clip(X, 3, 17)
         
+        # Boundary behavior
         if X < 3 or X > 17:
-            return X
+            return int(np.clip(X, self.X_min, self.X_max))
         
+        # Standard transition
         X_next = np.floor(X + U_current/3 + U_next/2)
         return int(np.clip(X_next, self.X_min, self.X_max))
     
     def compute_Y(self, X6):
         """
-        Probabilistic outcome based on final health marker X6
+        Binary outcome based on final health marker X₆
         
-        Returns P(Y=1 | X6) - probability of good outcome
+        Y = 0 if X₆ ∈ {1, 2, 18, 19, 20} (extreme failure zones)
+        Y = 1 if X₆ ∈ {3, 4, ..., 16, 17} (success zone)
         
-        Zones (symmetric around optimal [10,12]):
-        - [10, 12]: 1.00 (certain success - optimal range)
-        - [8, 10) or (12, 13]: 0.90 (very good)
-        - [7, 8) or [13, 14]: 0.70 (good)
-        - [5, 7) or (14, 16]: 0.30 (poor)
-        - < 5 or > 16: 0.00 (certain failure)
+        Returns: 0 or 1
         """
-        if 10 <= X6 <= 12:
-            return 1.0  # Optimal range - certain success
-        elif (8 <= X6 < 10) or (12 < X6 <= 13):
-            return 0.9  # Very close to optimal
-        elif (7 <= X6 < 8) or (13 < X6 <= 14):
-            return 0.7  # Acceptable but not great
-        elif (5 <= X6 < 7) or (14 < X6 <= 16):
-            return 0.3  # Poor outcome likely
+        if X6 in [1, 2, 18, 19, 20]:
+            return 0  # Failure
         else:
-            return 0.0  # Too extreme - certain failure
-    
-
+            return 1  # Success
     
     # ========================================================================
     # STANDARD OPTIMAL STOPPING
@@ -90,7 +125,7 @@ class CausalOptimalStopping:
     def solve_standard_optimal_stopping(self):
         """Standard Optimal Stopping: Find optimal intervention time"""
         
-        # Terminal
+        # Terminal condition at t=6
         for X6 in range(self.X_min, self.X_max + 1):
             Y = self.compute_Y(X6)
             for U6 in self.U_values:
@@ -102,12 +137,12 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    # Already intervened (I=1)
+                    # Already intervened (I=1) - can only continue
                     cont_used = self._continuation_value(t, Xt, Ut, True, 'standard')
                     self.value_function[(t, Xt, Ut, 1)] = cont_used
                     self.policy[(t, Xt, Ut, 1)] = 'no_action'
                     
-                    # Haven't intervened (I=0) - OPTIMAL STOPPING
+                    # Haven't intervened (I=0) - OPTIMAL STOPPING DECISION
                     intervene_val = self._intervention_value(t, Xt, Ut, 'standard')
                     wait_val = self._continuation_value(t, Xt, Ut, False, 'standard')
                     
@@ -129,7 +164,8 @@ class CausalOptimalStopping:
         return V0
     
     def _intervention_value(self, t, Xt, Ut, mode='standard'):
-        Xt_int = int(np.clip(Xt, self.intervention_low, self.intervention_high))
+        """Expected value if we intervene now"""
+        Xt_int = self.apply_intervention(Xt)
         total = 0.0
         
         for U_next in self.U_values:
@@ -143,6 +179,7 @@ class CausalOptimalStopping:
         return total
     
     def _continuation_value(self, t, Xt, Ut, already_intervened, mode='standard'):
+        """Expected value if we wait (don't intervene now)"""
         total = 0.0
         
         for U_next in self.U_values:
@@ -163,7 +200,7 @@ class CausalOptimalStopping:
     def solve_bounds_incomplete_information(self):
         """Bounds under Incomplete Information: Compute upper and lower bounds on E[Y]"""
         
-        # Terminal
+        # Terminal condition
         for X6 in range(self.X_min, self.X_max + 1):
             Y = self.compute_Y(X6)
             for U6 in self.U_values:
@@ -205,22 +242,27 @@ class CausalOptimalStopping:
         return V0_lower, V0_upper
     
     def _intervention_bounded(self, t, Xt, Ut, bound_type):
+        """Intervention value under uncertainty"""
         scenarios = []
         
-        # Try different intervention ranges
-        int_ranges = [
-            (self.intervention_low, self.intervention_high),
-            (int(self.intervention_low * (1 - self.intervention_uncertainty)),
-             int(self.intervention_high * (1 + self.intervention_uncertainty)))
+        # Try different intervention parameters (uncertainty in effectiveness)
+        intervention_params_list = [
+            (self.intervention_center, self.intervention_strength),
+            (self.intervention_center, self.intervention_strength * (1 - self.intervention_uncertainty)),
+            (self.intervention_center, self.intervention_strength * (1 + self.intervention_uncertainty))
         ]
         
-        for int_range in int_ranges:
+        for int_params in intervention_params_list:
             for use_lower_probs in [True, False]:
                 probs = self.U_probs_lower if use_lower_probs else self.U_probs_upper
                 
-                Xt_int = int(np.clip(Xt, int_range[0], int_range[1]))
-                total = 0.0
+                # Apply intervention with these parameters
+                center, strength = int_params
+                X_pulled = (1 - strength) * Xt + strength * center
+                Xt_int = int(np.round(X_pulled))
+                Xt_int = np.clip(Xt_int, 3, 17)
                 
+                total = 0.0
                 for U_next in self.U_values:
                     prob = probs[self.U_values.index(U_next)]
                     X_next = self.transition(Xt_int, Ut, U_next, intervene=False)
@@ -237,6 +279,7 @@ class CausalOptimalStopping:
         return min(scenarios) if bound_type == 'lower' else max(scenarios)
     
     def _continuation_bounded(self, t, Xt, Ut, already_intervened, bound_type):
+        """Continuation value under uncertainty"""
         scenarios = []
         
         for use_lower_probs in [True, False]:
@@ -313,7 +356,7 @@ class CausalOptimalStopping:
             'intervened': Whether intervention was applied
             'intervention_time': When intervention occurred
             'X_final': Final X6 value
-            'outcome': P(Y=1 | X6)
+            'outcome': Y ∈ {0, 1}
         """
         X_path = [self.X0]
         X_current = self.X0
@@ -327,7 +370,7 @@ class CausalOptimalStopping:
             if t == 1:
                 # First transition: only U1 affects
                 if intervene_at == t and not intervened:
-                    X_current_intervened = int(np.clip(X_current, self.intervention_low, self.intervention_high))
+                    X_current_intervened = self.apply_intervention(X_current)
                     X_next = int(np.floor(X_current_intervened + U_t/2))
                     X_next = int(np.clip(X_next, self.X_min, self.X_max))
                     intervened = True
@@ -409,8 +452,8 @@ class CausalOptimalStopping:
             nat = results['natural']
             print(f"Natural (no intervention):")
             print(f"  X path: {nat['X_path']}")
-            print(f"  Final X6 = {nat['X_final']}")
-            print(f"  P(Y=1) = {nat['outcome']:.2f} ({nat['outcome']*100:.0f}% success)\n")
+            print(f"  Final X₆ = {nat['X_final']}")
+            print(f"  Y = {nat['outcome']} ({'SUCCESS' if nat['outcome']==1 else 'FAILURE'})\n")
             
             # All intervention scenarios
             for tau in range(1, 6):
@@ -418,14 +461,14 @@ class CausalOptimalStopping:
                 is_optimal = '← OPTIMAL' if tau == optimal_tau else ''
                 print(f"Intervene at t={tau}:")
                 print(f"  X path: {res['X_path']}")
-                print(f"  Final X6 = {res['X_final']}")
-                print(f"  P(Y=1) = {res['outcome']:.2f} ({res['outcome']*100:.0f}% success) {is_optimal}\n")
+                print(f"  Final X₆ = {res['X_final']}")
+                print(f"  Y = {res['outcome']} ({'SUCCESS' if res['outcome']==1 else 'FAILURE'}) {is_optimal}\n")
             
             # Summary
             print(f"{'─'*80}")
             print(f"Optimal intervention time for this path: t={optimal_tau}")
-            print(f"Expected outcome at optimal time: P(Y=1) = {results[optimal_tau]['outcome']:.2f}")
-            print(f"Improvement over no intervention: {(results[optimal_tau]['outcome'] - results['natural']['outcome']):.2f}")
+            print(f"Expected outcome at optimal time: Y = {results[optimal_tau]['outcome']}")
+            print(f"Improvement over no intervention: {results[optimal_tau]['outcome'] - results['natural']['outcome']}")
             print(f"{'='*80}\n")
         
         return results, optimal_tau
@@ -457,9 +500,9 @@ class CausalOptimalStopping:
             
             # Print summary for this path
             print(f"Path #{path_num + 1}: U = {U_sequence}")
-            print(f"  Natural: P(Y=1) = {results['natural']['outcome']:.2f}")
-            print(f"  Optimal τ*={optimal_tau}: P(Y=1) = {results[optimal_tau]['outcome']:.2f}")
-            print(f"  Improvement: +{improvement:.2f}\n")
+            print(f"  Natural: Y = {results['natural']['outcome']}")
+            print(f"  Optimal τ*={optimal_tau}: Y = {results[optimal_tau]['outcome']}")
+            print(f"  Improvement: {improvement:+d}\n")
         
         # Summary statistics
         print(f"{'='*80}")
@@ -476,24 +519,23 @@ class CausalOptimalStopping:
             print(f"  t={t}: {count}/{num_paths} paths ({pct:.1f}%)")
         
         print(f"\nAverage improvement from optimal intervention: {np.mean(improvements):.3f}")
-        print(f"Max improvement: {np.max(improvements):.3f}")
-        print(f"Min improvement: {np.min(improvements):.3f}")
+        print(f"Max improvement: {np.max(improvements):.0f}")
+        print(f"Min improvement: {np.min(improvements):.0f}")
         print(f"{'='*80}\n")
         
         return optimal_times, improvements
     
     # ========================================================================
-    # OUTPUT
+    # OUTPUT - NOW SHOWS ALL STATES
     # ========================================================================
     
     def print_results(self, output_file='detailed_results.txt'):
         """
         Print results - saves detailed analysis to file, shows summary to console
         
-        NOTE: E[Y] now represents expected probability of good outcome (probabilistic Y)
-        - Y ∈ [0, 1] where Y = P(success | X6)
-        - Y = 1.0 if X6 ∈ [10,12] (optimal)
-        - Y decreases as X6 moves away from optimal range
+        NOW SHOWS ALL 280 STATES PER TIME PERIOD:
+        - 20 X values × 7 U values × 2 I values = 280 states
+        - Includes "unreachable" states (important for backward induction analysis)
         
         Parameters:
         -----------
@@ -508,113 +550,158 @@ class CausalOptimalStopping:
         
         # Open file for detailed output
         with open(output_file, 'w') as f:
-            # Redirect all detailed output to file
+            # Header
             f.write(f"{'='*80}\n")
-            f.write("STANDARD OPTIMAL STOPPING - DETAILED STATE ANALYSIS\n")
+            f.write("CAUSAL OPTIMAL STOPPING - COMPLETE STATE ANALYSIS\n")
             f.write(f"{'='*80}\n")
-            f.write(f"E[Y | X_0={self.X0}, optimal intervention]: {V2:.4f}  ({V2*100:.1f}% success)\n\n")
+            f.write(f"State space: {self.X_max - self.X_min + 1} X values × {len(self.U_values)} U values × 2 I values\n")
+            f.write(f"            = {(self.X_max - self.X_min + 1) * len(self.U_values) * 2} states per time period\n")
+            f.write(f"Initial condition: X₀ = {self.X0}\n")
+            f.write(f"U distribution (asymmetric, negative bias):\n")
+            for u, prob in zip(self.U_values, self.U_probs):
+                f.write(f"  U={u:2d}: {prob:.3f} ({prob*100:.1f}%)\n")
+            f.write(f"\n")
             
-            # Detailed state-by-state analysis
+            # ================================================================
+            # STANDARD OPTIMAL STOPPING
+            # ================================================================
+            f.write(f"{'='*80}\n")
+            f.write("STANDARD OPTIMAL STOPPING - ALL STATES\n")
+            f.write(f"{'='*80}\n")
+            f.write(f"E[Y | X₀={self.X0}, optimal intervention]: {V2:.4f}\n\n")
+            
+            # Show ALL states for each time period
             for t in range(1, self.T + 1):
                 f.write(f"\n{'─'*80}\n")
                 f.write(f"TIME t={t}\n")
                 f.write(f"{'─'*80}\n")
                 
-                # Show ALL X values
+                # Loop through ALL X values (no filtering)
                 for X in range(self.X_min, self.X_max + 1):
-                    f.write(f"\nX={X}:\n")
+                    f.write(f"\nX_{t}={X:2d}:\n")
                     
+                    # Loop through ALL U values
                     for U in self.U_values:
+                        # State (X, U, I=0) - haven't intervened yet
                         policy = self.policy.get((t, X, U, 0), '?')
-                        value_wait = self.value_function.get((t, X, U, 0), 0)
+                        value = self.value_function.get((t, X, U, 0), 0)
                         
                         if policy == 'INTERVENE':
-                            # Show what happens if we intervene
-                            X_intervened = int(np.clip(X, self.intervention_low, self.intervention_high))
-                            value_intervene = self._intervention_value(t, X, U, 'standard')
-                            
-                            # Show all possible next states
-                            next_states = []
-                            for U_next in self.U_values:
-                                X_next = self.transition(X_intervened, U, U_next, intervene=False)
-                                V_next = self.value_function.get((t+1, X_next, U_next, 1), 0)
-                                next_states.append((X_next, U_next, V_next))
-                            
-                            f.write(f"  U={U:2d}: 🔴 INTERVENE\n")
-                            f.write(f"         State (X={X}, U={U}, I=0) → E[Y]={value_wait:.4f}\n")
-                            f.write(f"         Intervene: X→{X_intervened} → E[Y]={value_intervene:.4f}\n")
-                            f.write(f"         Possible next states after intervention:\n")
-                            
-                            for X_next, U_next, V_next in next_states:
-                                prob = self.U_probs[self.U_values.index(U_next)]
-                                f.write(f"           → (X={X_next}, U={U_next}, I=1): E[Y]={V_next:.4f} [p={prob:.3f}]\n")
-                        
+                            X_intervened = self.apply_intervention(X)
+                            f.write(f"  U_{t}={U:2d}, I=0: 🔴 INTERVENE → X becomes {X_intervened}, E[Y]={value:.4f}\n")
                         elif policy == 'WAIT':
-                            f.write(f"  U={U:2d}: ⚪ WAIT → E[Y]={value_wait:.4f}\n")
+                            f.write(f"  U_{t}={U:2d}, I=0: ⚪ WAIT, E[Y]={value:.4f}\n")
+                        else:
+                            f.write(f"  U_{t}={U:2d}, I=0: ?, E[Y]={value:.4f}\n")
+                        
+                        # State (X, U, I=1) - already intervened
+                        value_used = self.value_function.get((t, X, U, 1), 0)
+                        f.write(f"  U_{t}={U:2d}, I=1: no_action, E[Y]={value_used:.4f}\n")
             
-            # Bounds analysis
+            # Terminal states
+            f.write(f"\n{'─'*80}\n")
+            f.write(f"TIME t=6 (TERMINAL)\n")
+            f.write(f"{'─'*80}\n")
+            for X in range(self.X_min, self.X_max + 1):
+                Y = self.compute_Y(X)
+                outcome_str = "SUCCESS" if Y == 1 else "FAILURE"
+                f.write(f"X₆={X:2d}: Y={Y} ({outcome_str})\n")
+            
+            # ================================================================
+            # BOUNDS UNDER INCOMPLETE INFORMATION
+            # ================================================================
             f.write(f"\n{'='*80}\n")
-            f.write("BOUNDS UNDER INCOMPLETE INFORMATION\n")
+            f.write("BOUNDS UNDER INCOMPLETE INFORMATION - ALL STATES\n")
             f.write(f"{'='*80}\n")
-            f.write(f"E[Y | X_0={self.X0}] ∈ [{V3_lower:.4f}, {V3_upper:.4f}]\n")
+            f.write(f"E[Y | X₀={self.X0}] ∈ [{V3_lower:.4f}, {V3_upper:.4f}]\n")
             f.write(f"Uncertainty width: {V3_upper - V3_lower:.4f}\n\n")
             
-            # Show bounds for all states
-            f.write("VALUE BOUNDS FOR ALL STATES:\n")
-            f.write("-" * 80 + "\n")
-            
             for t in range(1, self.T + 1):
-                f.write(f"\nTIME t={t}:\n")
+                f.write(f"\n{'─'*80}\n")
+                f.write(f"TIME t={t}\n")
+                f.write(f"{'─'*80}\n")
+                
                 for X in range(self.X_min, self.X_max + 1):
-                    f.write(f"  X={X}:\n")
+                    f.write(f"\nX_{t}={X:2d}:\n")
+                    
                     for U in self.U_values:
+                        # I=0
                         V_lower = self.value_lower.get((t, X, U, 0), 0)
                         V_upper = self.value_upper.get((t, X, U, 0), 0)
                         width = V_upper - V_lower
-                        f.write(f"    U={U:2d}: E[Y] ∈ [{V_lower:.4f}, {V_upper:.4f}]  (width={width:.4f})\n")
+                        f.write(f"  U_{t}={U:2d}, I=0: E[Y] ∈ [{V_lower:.4f}, {V_upper:.4f}], width={width:.4f}\n")
+                        
+                        # I=1
+                        V_lower_used = self.value_lower.get((t, X, U, 1), 0)
+                        V_upper_used = self.value_upper.get((t, X, U, 1), 0)
+                        width_used = V_upper_used - V_lower_used
+                        f.write(f"  U_{t}={U:2d}, I=1: E[Y] ∈ [{V_lower_used:.4f}, {V_upper_used:.4f}], width={width_used:.4f}\n")
             
-            # Robust policy
+            # ================================================================
+            # ROBUST OPTIMAL STOPPING
+            # ================================================================
             f.write(f"\n{'='*80}\n")
-            f.write("ROBUST OPTIMAL STOPPING - DETAILED\n")
+            f.write("ROBUST OPTIMAL STOPPING - ALL STATES\n")
             f.write(f"{'='*80}\n\n")
             
             for t in range(1, self.T + 1):
-                f.write(f"\nTIME t={t}:\n")
+                f.write(f"\n{'─'*80}\n")
+                f.write(f"TIME t={t}\n")
+                f.write(f"{'─'*80}\n")
+                
                 for X in range(self.X_min, self.X_max + 1):
-                    f.write(f"  X={X}:\n")
+                    f.write(f"\nX_{t}={X:2d}:\n")
+                    
                     for U in self.U_values:
                         policy = self.robust_policy.get((t, X, U, 0), '?')
                         if policy == 'INTERVENE':
                             symbol = '🔴'
                         elif policy == 'WAIT':
                             symbol = '⚪'
-                        else:
+                        elif policy == 'AMBIGUOUS':
                             symbol = '🟡'
-                        f.write(f"    U={U:2d}: {symbol} {policy}\n")
+                        else:
+                            symbol = '?'
+                        f.write(f"  U_{t}={U:2d}, I=0: {symbol} {policy}\n")
+                        f.write(f"  U_{t}={U:2d}, I=1: no_action\n")
         
-        # Print summary to console
+        # ================================================================
+        # CONSOLE SUMMARY
+        # ================================================================
         print(f"\n{'='*80}")
         print("CAUSAL OPTIMAL STOPPING - RESULTS SUMMARY")
         print(f"{'='*80}\n")
         
+        print("STATE SPACE:")
+        print("-" * 80)
+        print(f"X values: [{self.X_min}, {self.X_max}] ({self.X_max - self.X_min + 1} values)")
+        print(f"U values: {self.U_values} ({len(self.U_values)} values)")
+        print(f"I values: {{0, 1}} (2 values)")
+        print(f"Total states per time: {(self.X_max - self.X_min + 1) * len(self.U_values) * 2}")
+        print(f"\nU distribution (negative bias):")
+        for u, prob in zip(self.U_values, self.U_probs):
+            print(f"  U={u:2d}: {prob:.3f}")
+        expected_U = sum(u * p for u, p in zip(self.U_values, self.U_probs))
+        print(f"Expected U: {expected_U:.3f}\n")
+        
         print("STANDARD OPTIMAL STOPPING")
         print("-" * 80)
-        print(f"E[Y | X_0={self.X0}]: {V2:.4f}  ({V2*100:.1f}% success)\n")
+        print(f"E[Y | X₀={self.X0}]: {V2:.4f}\n")
         
         # Intervention summary by time
-        print("Intervention Pattern (% of states where INTERVENE is optimal):")
+        print("Intervention Pattern (% of I=0 states where INTERVENE is optimal):")
         for t in range(1, self.T + 1):
             intervene_count = sum(1 for X in range(self.X_min, self.X_max + 1)
                                 for U in self.U_values
                                 if self.policy.get((t, X, U, 0)) == 'INTERVENE')
-            total = 20 * 6  # 120 states per time
+            total = (self.X_max - self.X_min + 1) * len(self.U_values)
             pct = intervene_count / total * 100
             print(f"  t={t}: {intervene_count:3d}/{total} ({pct:5.1f}%)")
         
         print(f"\n{'='*80}")
         print("BOUNDS UNDER INCOMPLETE INFORMATION")
         print("-" * 80)
-        print(f"E[Y | X_0={self.X0}] ∈ [{V3_lower:.4f}, {V3_upper:.4f}]")
+        print(f"E[Y | X₀={self.X0}] ∈ [{V3_lower:.4f}, {V3_upper:.4f}]")
         print(f"Uncertainty width: {V3_upper - V3_lower:.4f}\n")
         
         print(f"{'='*80}")
@@ -677,7 +764,7 @@ if __name__ == "__main__":
     
     # Example 1: Specific shock sequence
     print("Example 1: Analyzing a specific shock sequence")
-    U_example = [-2, 1, -1, 2, -3, 1]
+    U_example = [-2, 1, -1, 0, -3, 1]
     results, optimal_tau = model.analyze_counterfactuals(U_example)
     
     # Example 2: Another shock sequence
