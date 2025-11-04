@@ -365,16 +365,21 @@ class CausalOptimalStopping:
                     # Loop through ALL U values
                     for U in self.U_values:
                         # State (X, U, I=0) - haven't intervened yet
-                        policy = self.policy.get((t, X, U, 0), '?')
                         value = self.value_function.get((t, X, U, 0), 0)
                         
-                        if policy == 'INTERVENE':
-                            X_intervened = self.apply_intervention(X)
-                            f.write(f"  U_{t}={U:2d}, I=0: 🔴 INTERVENE → X becomes {X_intervened}, E[Y]={value:.4f}\n")
-                        elif policy == 'WAIT':
-                            f.write(f"  U_{t}={U:2d}, I=0: ⚪ WAIT, E[Y]={value:.4f}\n")
+                        if t == 6:
+                            # Terminal time - no policy, just show value
+                            f.write(f"  U_{t}={U:2d}, I=0: E[Y]={value:.4f}\n")
                         else:
-                            f.write(f"  U_{t}={U:2d}, I=0: ?, E[Y]={value:.4f}\n")
+                            # Non-terminal - show policy
+                            policy = self.policy.get((t, X, U, 0), '?')
+                            if policy == 'INTERVENE':
+                                X_intervened = self.apply_intervention(X)
+                                f.write(f"  U_{t}={U:2d}, I=0: 🔴 INTERVENE → X becomes {X_intervened}, E[Y]={value:.4f}\n")
+                            elif policy == 'WAIT':
+                                f.write(f"  U_{t}={U:2d}, I=0: ⚪ WAIT, E[Y]={value:.4f}\n")
+                            else:
+                                f.write(f"  U_{t}={U:2d}, I=0: ?, E[Y]={value:.4f}\n")
                         
                         # State (X, U, I=1) - already intervened
                         value_used = self.value_function.get((t, X, U, 1), 0)
