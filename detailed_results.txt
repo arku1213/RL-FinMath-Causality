@@ -5886,3 +5886,250 @@ X_6=20:
   U_6= 2, I=1: no_action
   U_6= 3, I=0: 🟡 AMBIGUOUS
   U_6= 3, I=1: no_action
+
+================================================================================
+CAUSAL OPTIMAL STOPPING - SUMMARY STATISTICS
+================================================================================
+
+STATE SPACE:
+--------------------------------------------------------------------------------
+X values: [1, 20] (20 values)
+U values: [-3, -2, -1, 0, 1, 2, 3] (7 values)
+I values: {0, 1} (2 values)
+Total states per time: 280
+
+U distribution (negative bias):
+  U=-3: 0.050
+  U=-2: 0.150
+  U=-1: 0.300
+  U= 0: 0.200
+  U= 1: 0.200
+  U= 2: 0.080
+  U= 3: 0.020
+Expected U: -0.330
+
+STANDARD OPTIMAL STOPPING
+--------------------------------------------------------------------------------
+E[Y | X₀=10]: 1.0000
+
+Intervention Pattern (% of I=0 states where INTERVENE is optimal):
+  t=1:   0/140 (  0.0%)
+  t=2:   0/140 (  0.0%)
+  t=3:   0/140 (  0.0%)
+  t=4:   0/140 (  0.0%)
+  t=5:  56/140 ( 40.0%)
+  t=6:   0/140 (  0.0%)
+
+================================================================================
+BOUNDS UNDER INCOMPLETE INFORMATION
+--------------------------------------------------------------------------------
+E[Y | X₀=10] ∈ [1.0000, 1.0000]
+Uncertainty width: 0.0000
+
+================================================================================
+ROBUST OPTIMAL STOPPING
+--------------------------------------------------------------------------------
+t=1: INTERVENE   0 (  0.0%), WAIT   0 (  0.0%), AMBIGUOUS 140 (100.0%)
+t=2: INTERVENE   0 (  0.0%), WAIT   0 (  0.0%), AMBIGUOUS 140 (100.0%)
+t=3: INTERVENE   0 (  0.0%), WAIT   0 (  0.0%), AMBIGUOUS 140 (100.0%)
+t=4: INTERVENE   0 (  0.0%), WAIT   0 (  0.0%), AMBIGUOUS 140 (100.0%)
+t=5: INTERVENE  44 ( 31.4%), WAIT   0 (  0.0%), AMBIGUOUS  96 ( 68.6%)
+t=6: INTERVENE   0 (  0.0%), WAIT   0 (  0.0%), AMBIGUOUS 140 (100.0%)
+
+OVERALL:
+  INTERVENE:   44/840 (  5.2%)
+  WAIT:         0/840 (  0.0%)
+  AMBIGUOUS:  796/840 ( 94.8%)
+
+================================================================================
+
+================================================================================
+COUNTERFACTUAL ANALYSIS EXAMPLES
+================================================================================
+
+Demonstrating Pearl's Rung 3: 'What if we had intervened differently?'
+
+Example 1: Analyzing a specific shock sequence
+
+================================================================================
+COUNTERFACTUAL ANALYSIS
+================================================================================
+Shock sequence: U = [-2, 1, -1, 0, -3, 1]
+
+Natural (no intervention):
+  X path: [10, 9, 8, 7, 6, 4, 3]
+  Final X₆ = 3
+  Y = 1 (SUCCESS)
+
+Intervene at t=1:
+  X path: [10, 9, 8, 7, 6, 4, 3]
+  Final X₆ = 3
+  Y = 1 (SUCCESS) ← OPTIMAL
+
+Intervene at t=2:
+  X path: [10, 9, 9, 8, 7, 5, 4]
+  Final X₆ = 4
+  Y = 1 (SUCCESS) 
+
+Intervene at t=3:
+  X path: [10, 9, 8, 8, 7, 5, 4]
+  Final X₆ = 4
+  Y = 1 (SUCCESS) 
+
+Intervene at t=4:
+  X path: [10, 9, 8, 7, 8, 6, 5]
+  Final X₆ = 5
+  Y = 1 (SUCCESS) 
+
+Intervene at t=5:
+  X path: [10, 9, 8, 7, 6, 7, 6]
+  Final X₆ = 6
+  Y = 1 (SUCCESS) 
+
+────────────────────────────────────────────────────────────────────────────────
+Optimal intervention time for this path: t=1
+Expected outcome at optimal time: Y = 1
+Improvement over no intervention: 0
+================================================================================
+
+
+Example 2: Another shock sequence
+
+================================================================================
+COUNTERFACTUAL ANALYSIS
+================================================================================
+Shock sequence: U = [3, -2, 2, -1, 1, -3]
+
+Natural (no intervention):
+  X path: [10, 11, 11, 11, 11, 11, 9]
+  Final X₆ = 9
+  Y = 1 (SUCCESS)
+
+Intervene at t=1:
+  X path: [10, 11, 11, 11, 11, 11, 9]
+  Final X₆ = 9
+  Y = 1 (SUCCESS) ← OPTIMAL
+
+Intervene at t=2:
+  X path: [10, 11, 10, 10, 10, 10, 8]
+  Final X₆ = 8
+  Y = 1 (SUCCESS) 
+
+Intervene at t=3:
+  X path: [10, 11, 11, 10, 10, 10, 8]
+  Final X₆ = 8
+  Y = 1 (SUCCESS) 
+
+Intervene at t=4:
+  X path: [10, 11, 11, 11, 10, 10, 8]
+  Final X₆ = 8
+  Y = 1 (SUCCESS) 
+
+Intervene at t=5:
+  X path: [10, 11, 11, 11, 11, 10, 8]
+  Final X₆ = 8
+  Y = 1 (SUCCESS) 
+
+────────────────────────────────────────────────────────────────────────────────
+Optimal intervention time for this path: t=1
+Expected outcome at optimal time: Y = 1
+Improvement over no intervention: 0
+================================================================================
+
+
+================================================================================
+ANALYZING MULTIPLE RANDOM PATHS
+================================================================================
+
+================================================================================
+COUNTERFACTUAL ANALYSIS: 15 RANDOM SHOCK SEQUENCES
+================================================================================
+
+Path #1: U = [0, 1, 0, 0, -1, 0]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #2: U = [-1, 1, -3, -1, -2, -2]
+  Natural: Y = 0
+  Optimal τ*=4: Y = 1
+  Improvement: +1
+
+Path #3: U = [-1, -3, 0, -1, -1, -1]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #4: U = [0, 1, -1, 0, 1, 1]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #5: U = [2, 0, 2, 1, 0, -1]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #6: U = [-1, 1, -1, 2, -1, 0]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #7: U = [1, -1, 1, -3, -2, 0]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #8: U = [-2, 1, -1, 1, 2, 0]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #9: U = [1, 2, 1, 0, -1, -3]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #10: U = [-3, 0, -1, -2, -2, -1]
+  Natural: Y = 0
+  Optimal τ*=4: Y = 1
+  Improvement: +1
+
+Path #11: U = [1, -3, 0, 1, -1, -1]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #12: U = [-2, -3, -1, 1, -1, -1]
+  Natural: Y = 0
+  Optimal τ*=2: Y = 1
+  Improvement: +1
+
+Path #13: U = [-2, 1, -1, 0, -3, 2]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #14: U = [1, -1, 1, 2, 2, -1]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+Path #15: U = [0, 1, 1, -3, -1, 2]
+  Natural: Y = 1
+  Optimal τ*=1: Y = 1
+  Improvement: +0
+
+================================================================================
+SUMMARY STATISTICS
+================================================================================
+Distribution of optimal intervention times:
+  t=1: 12/15 paths (80.0%)
+  t=2: 1/15 paths (6.7%)
+  t=4: 2/15 paths (13.3%)
+
+Average improvement from optimal intervention: 0.200
+Max improvement: 1
+Min improvement: 0
+================================================================================
+
