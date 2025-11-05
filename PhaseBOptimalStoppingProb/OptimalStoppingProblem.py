@@ -6,11 +6,16 @@ class CausalOptimalStopping:
     1. Standard Optimal Stopping
     2. Bounds under Incomplete Information
     3. Robust Optimal Stopping
+    
+    NEW: Mandatory intervention at boundary states {1, 2, 18, 19, 20}
     """
     
     def __init__(self, X0=10, prob_uncertainty=0.15, intervention_uncertainty=0.25):
         self.X0 = X0
         self.X_min, self.X_max = 1, 20
+        
+        # Boundary states trigger automatic intervention
+        self.boundary_states = [1, 2, 18, 19, 20]
         
         # No more "healthy range" - intervention pulls toward center
         self.intervention_center = 10
@@ -89,7 +94,7 @@ class CausalOptimalStopping:
                 X = int(np.round(X_pulled))
                 X = np.clip(X, 3, 17)
         
-        # Boundary behavior
+        # Boundary behavior - absorbing states
         if X < 3 or X > 17:
             return int(np.clip(X, self.X_min, self.X_max))
         
@@ -116,7 +121,10 @@ class CausalOptimalStopping:
     # ========================================================================
     
     def solve_standard_optimal_stopping(self):
-        """Standard Optimal Stopping: Find optimal intervention time"""
+        """Standard Optimal Stopping: Find optimal intervention time
+        
+        NEW: Automatic intervention at boundary states
+        """
         
         # Terminal condition at t=6
         for X6 in range(self.X_min, self.X_max + 1):
@@ -130,21 +138,38 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    # Already intervened (I=1) - can only continue
-                    cont_used = self._continuation_value(t, Xt, Ut, True, 'standard')
-                    self.value_function[(t, Xt, Ut, 1)] = cont_used
-                    self.policy[(t, Xt, Ut, 1)] = 'no_action'
-                    
-                    # Haven't intervened (I=0) - OPTIMAL STOPPING DECISION
-                    intervene_val = self._intervention_value(t, Xt, Ut, 'standard')
-                    wait_val = self._continuation_value(t, Xt, Ut, False, 'standard')
-                    
-                    if intervene_val > wait_val:
+                    # ============================================================
+                    # BOUNDARY CHECK: Automatic intervention at boundary
+                    # ============================================================
+                    if Xt in self.boundary_states:
+                        # Already intervened (I=1) - stuck at boundary, certain death
+                        self.value_function[(t, Xt, Ut, 1)] = 0.0
+                        self.policy[(t, Xt, Ut, 1)] = 'no_action'
+                        
+                        # Haven't intervened (I=0) - AUTOMATIC INTERVENTION
+                        intervene_val = self._intervention_value(t, Xt, Ut, 'standard')
                         self.value_function[(t, Xt, Ut, 0)] = intervene_val
-                        self.policy[(t, Xt, Ut, 0)] = 'INTERVENE'
+                        self.policy[(t, Xt, Ut, 0)] = 'AUTO_INTERVENE'
+                    
+                    # ============================================================
+                    # NON-BOUNDARY: Normal optimal stopping logic
+                    # ============================================================
                     else:
-                        self.value_function[(t, Xt, Ut, 0)] = wait_val
-                        self.policy[(t, Xt, Ut, 0)] = 'WAIT'
+                        # Already intervened (I=1) - can only continue
+                        cont_used = self._continuation_value(t, Xt, Ut, True, 'standard')
+                        self.value_function[(t, Xt, Ut, 1)] = cont_used
+                        self.policy[(t, Xt, Ut, 1)] = 'no_action'
+                        
+                        # Haven't intervened (I=0) - OPTIMAL STOPPING DECISION
+                        intervene_val = self._intervention_value(t, Xt, Ut, 'standard')
+                        wait_val = self._continuation_value(t, Xt, Ut, False, 'standard')
+                        
+                        if intervene_val > wait_val:
+                            self.value_function[(t, Xt, Ut, 0)] = intervene_val
+                            self.policy[(t, Xt, Ut, 0)] = 'INTERVENE'
+                        else:
+                            self.value_function[(t, Xt, Ut, 0)] = wait_val
+                            self.policy[(t, Xt, Ut, 0)] = 'WAIT'
         
         # Value at t=0
         V0 = 0.0
@@ -191,7 +216,10 @@ class CausalOptimalStopping:
     # ========================================================================
     
     def solve_bounds_incomplete_information(self):
-        """Bounds under Incomplete Information: Compute upper and lower bounds on E[Y]"""
+        """Bounds under Incomplete Information: Compute upper and lower bounds on E[Y]
+        
+        NEW: Automatic intervention at boundary states
+        """
         
         # Terminal condition
         for X6 in range(self.X_min, self.X_max + 1):
@@ -207,20 +235,38 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    # Already intervened
-                    cont_lower = self._continuation_bounded(t, Xt, Ut, True, 'lower')
-                    cont_upper = self._continuation_bounded(t, Xt, Ut, True, 'upper')
-                    self.value_lower[(t, Xt, Ut, 1)] = cont_lower
-                    self.value_upper[(t, Xt, Ut, 1)] = cont_upper
+                    # ============================================================
+                    # BOUNDARY CHECK: Automatic intervention at boundary
+                    # ============================================================
+                    if Xt in self.boundary_states:
+                        # Already intervened (I=1) - certain death
+                        self.value_lower[(t, Xt, Ut, 1)] = 0.0
+                        self.value_upper[(t, Xt, Ut, 1)] = 0.0
+                        
+                        # Haven't intervened (I=0) - automatic intervention
+                        int_lower = self._intervention_bounded(t, Xt, Ut, 'lower')
+                        int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
+                        self.value_lower[(t, Xt, Ut, 0)] = int_lower
+                        self.value_upper[(t, Xt, Ut, 0)] = int_upper
                     
-                    # Haven't intervened
-                    int_lower = self._intervention_bounded(t, Xt, Ut, 'lower')
-                    int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
-                    wait_lower = self._continuation_bounded(t, Xt, Ut, False, 'lower')
-                    wait_upper = self._continuation_bounded(t, Xt, Ut, False, 'upper')
-                    
-                    self.value_lower[(t, Xt, Ut, 0)] = max(int_lower, wait_lower)
-                    self.value_upper[(t, Xt, Ut, 0)] = max(int_upper, wait_upper)
+                    # ============================================================
+                    # NON-BOUNDARY: Normal bounds logic
+                    # ============================================================
+                    else:
+                        # Already intervened
+                        cont_lower = self._continuation_bounded(t, Xt, Ut, True, 'lower')
+                        cont_upper = self._continuation_bounded(t, Xt, Ut, True, 'upper')
+                        self.value_lower[(t, Xt, Ut, 1)] = cont_lower
+                        self.value_upper[(t, Xt, Ut, 1)] = cont_upper
+                        
+                        # Haven't intervened
+                        int_lower = self._intervention_bounded(t, Xt, Ut, 'lower')
+                        int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
+                        wait_lower = self._continuation_bounded(t, Xt, Ut, False, 'lower')
+                        wait_upper = self._continuation_bounded(t, Xt, Ut, False, 'upper')
+                        
+                        self.value_lower[(t, Xt, Ut, 0)] = max(int_lower, wait_lower)
+                        self.value_upper[(t, Xt, Ut, 0)] = max(int_upper, wait_upper)
         
         # Value at t=0
         V0_lower, V0_upper = 0.0, 0.0
@@ -300,7 +346,10 @@ class CausalOptimalStopping:
     # ========================================================================
     
     def solve_robust_optimal_stopping(self):
-        """Robust Optimal Stopping: Robust policy under uncertainty"""
+        """Robust Optimal Stopping: Robust policy under uncertainty
+        
+        NEW: Automatic intervention at boundary states
+        """
         
         # First solve Bounds if not already done
         if not self.value_lower:
@@ -311,21 +360,32 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
+                    # ============================================================
+                    # BOUNDARY CHECK: Automatic intervention at boundary
+                    # ============================================================
+                    if Xt in self.boundary_states:
+                        self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
+                        self.robust_policy[(t, Xt, Ut, 0)] = 'AUTO_INTERVENE'
                     
-                    # Get bounds
-                    int_lower = self._intervention_bounded(t, Xt, Ut, 'lower')
-                    int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
-                    wait_lower = self._continuation_bounded(t, Xt, Ut, False, 'lower')
-                    wait_upper = self._continuation_bounded(t, Xt, Ut, False, 'upper')
-                    
-                    # Robust decision rule
-                    if int_lower > wait_upper:
-                        self.robust_policy[(t, Xt, Ut, 0)] = 'INTERVENE'
-                    elif int_upper < wait_lower:
-                        self.robust_policy[(t, Xt, Ut, 0)] = 'WAIT'
+                    # ============================================================
+                    # NON-BOUNDARY: Normal robust logic
+                    # ============================================================
                     else:
-                        self.robust_policy[(t, Xt, Ut, 0)] = 'AMBIGUOUS'
+                        self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
+                        
+                        # Get bounds
+                        int_lower = self._intervention_bounded(t, Xt, Ut, 'lower')
+                        int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
+                        wait_lower = self._continuation_bounded(t, Xt, Ut, False, 'lower')
+                        wait_upper = self._continuation_bounded(t, Xt, Ut, False, 'upper')
+                        
+                        # Robust decision rule
+                        if int_lower > wait_upper:
+                            self.robust_policy[(t, Xt, Ut, 0)] = 'INTERVENE'
+                        elif int_upper < wait_lower:
+                            self.robust_policy[(t, Xt, Ut, 0)] = 'WAIT'
+                        else:
+                            self.robust_policy[(t, Xt, Ut, 0)] = 'AMBIGUOUS'
     
     # ========================================================================
     # OUTPUT
@@ -376,6 +436,9 @@ class CausalOptimalStopping:
                             if policy == 'INTERVENE':
                                 X_intervened = self.apply_intervention(X)
                                 f.write(f"  U_{t}={U:2d}, I=0: 🔴 INTERVENE → X becomes {X_intervened}, E[Y]={value:.4f}\n")
+                            elif policy == 'AUTO_INTERVENE':
+                                X_intervened = self.apply_intervention(X)
+                                f.write(f"  U_{t}={U:2d}, I=0: 🚨 AUTO_INTERVENE → X becomes {X_intervened}, E[Y]={value:.4f}\n")
                             elif policy == 'WAIT':
                                 f.write(f"  U_{t}={U:2d}, I=0: ⚪ WAIT, E[Y]={value:.4f}\n")
                             else:
@@ -432,6 +495,8 @@ class CausalOptimalStopping:
                         policy = self.robust_policy.get((t, X, U, 0), '?')
                         if policy == 'INTERVENE':
                             symbol = '🔴'
+                        elif policy == 'AUTO_INTERVENE':
+                            symbol = '🚨'
                         elif policy == 'WAIT':
                             symbol = '⚪'
                         elif policy == 'AMBIGUOUS':
