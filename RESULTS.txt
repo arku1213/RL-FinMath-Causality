@@ -5857,15 +5857,15 @@ SUMMARY STATISTICS
 ────────────────────────────────────────────────────────────────────────────────
 
 Expected intervention time (given intervention occurs):
-  Mean:   t = 4.96
+  Mean:   t = 4.97
   Median: t = 5.0
-  Std Dev:    0.19
+  Std Dev:    0.18
 
-Intervention rate: 22.30%
-  (2,230 simulations used intervention)
+Intervention rate: 22.35%
+  (2,235 simulations used intervention)
 
-Never intervene rate: 77.70%
-  (7,770 simulations never needed intervention)
+Never intervene rate: 77.65%
+  (7,765 simulations never needed intervention)
 
 ────────────────────────────────────────────────────────────────────────────────
 DISTRIBUTION OF INTERVENTION TIMES
@@ -5873,9 +5873,276 @@ DISTRIBUTION OF INTERVENTION TIMES
 
   t=1:   0.00%    (0 times)
   t=2:   0.00%    (0 times)
-  t=3:   0.00%    (0 times)
-  t=4:   0.84%    (84 times)
-  t=5:  21.46%  ██████████  (2,146 times)
-  Never:  77.70%  ██████████████████████████████████████  (7,770 times)
+  t=3:   0.01%    (1 times)
+  t=4:   0.75%    (75 times)
+  t=5:  21.59%  ██████████  (2,159 times)
+  Never:  77.65%  ██████████████████████████████████████  (7,765 times)
+
+================================================================================
+
+
+================================================================================
+INTERVENTION BOUNDARY CHARACTERIZATION
+================================================================================
+
+Shows which (X, U) states trigger intervention at each time t
+
+────────────────────────────────────────────────────────────────────────────────
+TIME t=1
+────────────────────────────────────────────────────────────────────────────────
+
+🚨 AUTO-INTERVENE (Boundary States):
+   X= 1: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X= 2: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=18: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=19: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=20: All U values [-3, -2, -1, 0, 1, 2, 3]
+
+🔴 INTERVENE (Optimal Policy): None
+
+Summary: 35/140 states trigger intervention (25.0%)
+
+────────────────────────────────────────────────────────────────────────────────
+TIME t=2
+────────────────────────────────────────────────────────────────────────────────
+
+🚨 AUTO-INTERVENE (Boundary States):
+   X= 1: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X= 2: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=18: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=19: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=20: All U values [-3, -2, -1, 0, 1, 2, 3]
+
+🔴 INTERVENE (Optimal Policy): None
+
+Summary: 35/140 states trigger intervention (25.0%)
+
+────────────────────────────────────────────────────────────────────────────────
+TIME t=3
+────────────────────────────────────────────────────────────────────────────────
+
+🚨 AUTO-INTERVENE (Boundary States):
+   X= 1: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X= 2: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=18: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=19: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=20: All U values [-3, -2, -1, 0, 1, 2, 3]
+
+🔴 INTERVENE (Optimal Policy): None
+
+Summary: 35/140 states trigger intervention (25.0%)
+
+────────────────────────────────────────────────────────────────────────────────
+TIME t=4
+────────────────────────────────────────────────────────────────────────────────
+
+🚨 AUTO-INTERVENE (Boundary States):
+   X= 1: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X= 2: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=18: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=19: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=20: All U values [-3, -2, -1, 0, 1, 2, 3]
+
+🔴 INTERVENE (Optimal Policy): None
+
+Summary: 35/140 states trigger intervention (25.0%)
+
+────────────────────────────────────────────────────────────────────────────────
+TIME t=5
+────────────────────────────────────────────────────────────────────────────────
+
+🚨 AUTO-INTERVENE (Boundary States):
+   X= 1: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X= 2: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=18: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=19: All U values [-3, -2, -1, 0, 1, 2, 3]
+   X=20: All U values [-3, -2, -1, 0, 1, 2, 3]
+
+🔴 INTERVENE (Optimal Policy):
+   X= 3: U ∈ [-3, -2, -1, 0, 1, 2, 3]
+   X= 4: U ∈ [-3, -2, -1, 0, 1]
+   X= 5: U ∈ [-3, -2]
+   X=16: U ∈ [2, 3]
+   X=17: U ∈ [-1, 0, 1, 2, 3]
+
+Summary: 56/140 states trigger intervention (40.0%)
+
+
+================================================================================
+PATH-SPECIFIC COUNTERFACTUAL ANALYSIS
+================================================================================
+
+For 10 sample paths, shows E[Y] under different intervention times
+Optimal intervention time t* maximizes E[Y] for each specific path
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #1
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 9, 9, 10, 10, 9, 7]
+Shock sequence:    U = [-1, 2, 1, 0, -2, -2]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.8646
+  Intervene at t=1: E[Y] = 0.9361
+  Intervene at t=2: E[Y] = 0.9964
+  Intervene at t=3: E[Y] = 0.9999
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy never intervenes
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #2
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 9, 8, 8, 8, 6, 6]
+Shock sequence:    U = [-2, 1, 0, 1, -3, 2]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.8069
+  Intervene at t=1: E[Y] = 0.8998
+  Intervene at t=2: E[Y] = 0.9663
+  Intervene at t=3: E[Y] = 0.9980
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy never intervenes
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #3
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 10, 9, 7, 5, 3, 2]
+Shock sequence:    U = [1, -1, -2, -2, -1, 0]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.9575
+  Intervene at t=1: E[Y] = 0.9575
+  Intervene at t=2: E[Y] = 0.9819
+  Intervene at t=3: E[Y] = 0.9831
+  Intervene at t=4: E[Y] = 0.9975
+  Intervene at t=5: E[Y] = 1.0000 ← OPTIMAL
+
+✓ Optimal policy intervenes at t=5
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #4
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 9, 8, 7, 6, 4, 3]
+Shock sequence:    U = [-1, -1, 0, -2, -1, -1]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.8646
+  Intervene at t=1: E[Y] = 0.9361
+  Intervene at t=2: E[Y] = 0.9473
+  Intervene at t=3: E[Y] = 0.9980
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy intervenes at t=5
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #5
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 9, 9, 8, 7, 7, 5]
+Shock sequence:    U = [-1, 1, -2, 0, 0, -3]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.8646
+  Intervene at t=1: E[Y] = 0.9361
+  Intervene at t=2: E[Y] = 0.9915
+  Intervene at t=3: E[Y] = 0.9831
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy never intervenes
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #6
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 10, 9, 7, 7, 8, 9]
+Shock sequence:    U = [0, -2, -2, 2, 2, 1]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.9575
+  Intervene at t=1: E[Y] = 0.9575
+  Intervene at t=2: E[Y] = 0.9663
+  Intervene at t=3: E[Y] = 0.9831
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy never intervenes
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #7
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 9, 7, 6, 5, 3, 1]
+Shock sequence:    U = [-1, -2, 0, -1, -2, -1]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.8646
+  Intervene at t=1: E[Y] = 0.9361
+  Intervene at t=2: E[Y] = 0.9104
+  Intervene at t=3: E[Y] = 0.9980
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy intervenes at t=5
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #8
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 8, 8, 8, 7, 6, 5]
+Shock sequence:    U = [-3, 2, -1, 0, -1, 0]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.6724
+  Intervene at t=1: E[Y] = 0.8069
+  Intervene at t=2: E[Y] = 0.9819
+  Intervene at t=3: E[Y] = 0.9935
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy never intervenes
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #9
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 10, 9, 9, 10, 11, 12]
+Shock sequence:    U = [0, -2, 2, 1, 2, 1]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.9575
+  Intervene at t=1: E[Y] = 0.9575
+  Intervene at t=2: E[Y] = 0.9663
+  Intervene at t=3: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=4: E[Y] = 1.0000
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy never intervenes
+
+────────────────────────────────────────────────────────────────────────────────
+PATH #10
+────────────────────────────────────────────────────────────────────────────────
+
+Health trajectory: X = [10, 10, 11, 10, 8, 5, 3]
+Shock sequence:    U = [0, 2, -2, -2, -3, -1]
+
+Expected outcomes by intervention strategy:
+  Never intervene:  E[Y] = 0.9575
+  Intervene at t=1: E[Y] = 0.9575
+  Intervene at t=2: E[Y] = 0.9964
+  Intervene at t=3: E[Y] = 0.9980
+  Intervene at t=4: E[Y] = 1.0000 ← OPTIMAL
+  Intervene at t=5: E[Y] = 1.0000
+
+✓ Optimal policy intervenes at t=5
 
 ================================================================================

@@ -392,6 +392,140 @@ class CausalOptimalStopping:
     # INTERVENTION TIMING ANALYSIS
     # ========================================================================
     
+    def characterize_intervention_boundary(self):
+        """
+        Option B: Characterize the intervention decision boundary at each time
+        
+        Returns which (X, U) combinations trigger intervention at each time t
+        """
+        boundary = {}
+        
+        for t in range(1, 6):  # t=1,2,3,4,5
+            boundary[t] = {
+                'auto_intervene': [],  # Boundary states
+                'intervene': [],       # Policy says INTERVENE
+                'wait': []             # Policy says WAIT (for reference)
+            }
+            
+            for X in range(self.X_min, self.X_max + 1):
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), 'UNKNOWN')
+                    
+                    if policy == 'AUTO_INTERVENE':
+                        boundary[t]['auto_intervene'].append((X, U))
+                    elif policy == 'INTERVENE':
+                        boundary[t]['intervene'].append((X, U))
+                    elif policy == 'WAIT':
+                        boundary[t]['wait'].append((X, U))
+        
+        return boundary
+    
+    def compute_path_counterfactuals(self, n_paths=10):
+        """
+        Option C: For sample paths, compute E[Y] under different intervention times
+        
+        Shows what would happen if we intervened at different times along specific paths
+        """
+        np.random.seed(42)  # For reproducibility
+        path_analyses = []
+        
+        for path_id in range(n_paths):
+            # Generate a single path
+            X_sequence = [self.X0]
+            U_sequence = []
+            I = 0
+            
+            # Generate U1 and compute X1
+            U1 = np.random.choice(self.U_values, p=self.U_probs)
+            U_sequence.append(U1)
+            X1 = int(np.floor(self.X0 + U1/2))
+            X1 = np.clip(X1, self.X_min, self.X_max)
+            X_sequence.append(X1)
+            
+            # Generate rest of path (t=2 to t=6)
+            X = X1
+            U_prev = U1
+            for t in range(2, 7):
+                U_current = np.random.choice(self.U_values, p=self.U_probs)
+                U_sequence.append(U_current)
+                
+                # Transition
+                if X < 3 or X > 17:
+                    X_next = X  # Boundary absorption
+                else:
+                    X_next = int(np.floor(X + U_prev/3 + U_current/2))
+                    X_next = np.clip(X_next, self.X_min, self.X_max)
+                
+                X_sequence.append(X_next)
+                X = X_next
+                U_prev = U_current
+            
+            # Now compute counterfactuals: what if we intervened at each time?
+            counterfactuals = {}
+            
+            # Counterfactual: Never intervene
+            counterfactuals['never'] = self._evaluate_path_outcome(
+                X_sequence, U_sequence, intervene_at=None
+            )
+            
+            # Counterfactual: Intervene at each time t=1,2,3,4,5
+            for t_intervene in range(1, 6):
+                counterfactuals[f't={t_intervene}'] = self._evaluate_path_outcome(
+                    X_sequence, U_sequence, intervene_at=t_intervene
+                )
+            
+            # Optimal intervention time for this path
+            optimal_t = self._find_optimal_intervention_time(X_sequence, U_sequence)
+            
+            path_analyses.append({
+                'path_id': path_id,
+                'X_sequence': X_sequence,
+                'U_sequence': U_sequence,
+                'counterfactuals': counterfactuals,
+                'optimal_t': optimal_t
+            })
+        
+        return path_analyses
+    
+    def _evaluate_path_outcome(self, X_sequence, U_sequence, intervene_at):
+        """
+        Evaluate expected outcome for a path given intervention at specific time
+        (or never if intervene_at=None)
+        
+        Uses the value function to get expected continuation value
+        """
+        if intervene_at is None:
+            # Never intervene - follow path with I=1 (as if already used)
+            # Start from t=1
+            X1 = X_sequence[1]
+            U1 = U_sequence[0]
+            return self.value_function.get((1, X1, U1, 1), 0)
+        
+        else:
+            # Intervene at specific time
+            # Before intervention: I=0, after: I=1
+            Xt = X_sequence[intervene_at]
+            Ut = U_sequence[intervene_at - 1] if intervene_at > 0 else U_sequence[0]
+            
+            # Get value of intervening at this time
+            return self._intervention_value(intervene_at, Xt, Ut, 'standard')
+    
+    def _find_optimal_intervention_time(self, X_sequence, U_sequence):
+        """
+        Find optimal intervention time by following the policy along the path
+        """
+        I = 0
+        for t in range(1, 6):
+            X = X_sequence[t]
+            U = U_sequence[t-1]
+            
+            if I == 0:
+                policy = self.policy.get((t, X, U, 0), 'WAIT')
+                if policy in ['INTERVENE', 'AUTO_INTERVENE']:
+                    return t
+        
+        return None  # Never intervene
+    
     def compute_intervention_timing(self, n_simulations=10000):
         """
         Simulate optimal policy from X0 and analyze when intervention occurs
@@ -488,6 +622,12 @@ class CausalOptimalStopping:
         
         # Compute intervention timing
         timing = self.compute_intervention_timing(n_simulations)
+        
+        # Compute intervention boundary characterization (Option B)
+        boundary = self.characterize_intervention_boundary()
+        
+        # Compute path counterfactuals (Option C)
+        path_counterfactuals = self.compute_path_counterfactuals(n_paths=10)
         
         # Open file for ALL output
         with open(output_file, 'w') as f:
@@ -595,12 +735,15 @@ class CausalOptimalStopping:
             # ================================================================
             # INTERVENTION TIMING ANALYSIS
             # ================================================================
+            f.write(f"\n\n{'='*80}\n")
+            f.write("INTERVENTION TIMING ANALYSIS\n")
+            f.write(f"{'='*80}\n\n")
             
             # Summary statistics
-            f.write(f"{'─'*40}\n")
+            f.write(f"{'─'*80}\n")
             f.write("SUMMARY STATISTICS\n")
-            f.write(f"{'─'*40}\n\n")
-
+            f.write(f"{'─'*80}\n\n")
+            
             if timing['mean_time']:
                 f.write(f"Expected intervention time (given intervention occurs):\n")
                 f.write(f"  Mean:   t = {timing['mean_time']:.2f}\n")
@@ -616,9 +759,9 @@ class CausalOptimalStopping:
             f.write(f"  ({timing['time_distribution']['never']:,} simulations never needed intervention)\n\n")
             
             # Time distribution
-            f.write(f"{'─'*40}\n")
+            f.write(f"{'─'*80}\n")
             f.write("DISTRIBUTION OF INTERVENTION TIMES\n")
-            f.write(f"{'─'*40}\n\n")
+            f.write(f"{'─'*80}\n\n")
             
             for t in range(1, 6):
                 count = timing['time_distribution'][t]
@@ -632,6 +775,109 @@ class CausalOptimalStopping:
             bar_length = int(pct_never * 0.5)
             bar = '█' * bar_length
             f.write(f"  Never: {pct_never:6.2f}%  {bar}  ({never:,} times)\n\n")
+            
+            f.write(f"{'='*80}\n")
+            
+            # ================================================================
+            # OPTION B: INTERVENTION BOUNDARY CHARACTERIZATION
+            # ================================================================
+            f.write(f"\n\n{'='*80}\n")
+            f.write("INTERVENTION BOUNDARY CHARACTERIZATION\n")
+            f.write(f"{'='*80}\n\n")
+            f.write("Shows which (X, U) states trigger intervention at each time t\n\n")
+            
+            for t in range(1, 6):
+                f.write(f"{'─'*80}\n")
+                f.write(f"TIME t={t}\n")
+                f.write(f"{'─'*80}\n\n")
+                
+                # Auto-intervene (boundary states)
+                auto = boundary[t]['auto_intervene']
+                if auto:
+                    # Group by X
+                    auto_by_x = {}
+                    for (X, U) in auto:
+                        if X not in auto_by_x:
+                            auto_by_x[X] = []
+                        auto_by_x[X].append(U)
+                    
+                    f.write("🚨 AUTO-INTERVENE (Boundary States):\n")
+                    for X in sorted(auto_by_x.keys()):
+                        U_list = sorted(auto_by_x[X])
+                        f.write(f"   X={X:2d}: All U values {U_list}\n")
+                    f.write("\n")
+                
+                # Policy intervene
+                intervene = boundary[t]['intervene']
+                if intervene:
+                    # Group by X
+                    intervene_by_x = {}
+                    for (X, U) in intervene:
+                        if X not in intervene_by_x:
+                            intervene_by_x[X] = []
+                        intervene_by_x[X].append(U)
+                    
+                    f.write("🔴 INTERVENE (Optimal Policy):\n")
+                    for X in sorted(intervene_by_x.keys()):
+                        U_list = sorted(intervene_by_x[X])
+                        f.write(f"   X={X:2d}: U ∈ {U_list}\n")
+                    f.write("\n")
+                else:
+                    f.write("🔴 INTERVENE (Optimal Policy): None\n\n")
+                
+                # Summary
+                total_intervene_states = len(auto) + len(intervene)
+                total_states = len(auto) + len(intervene) + len(boundary[t]['wait'])
+                pct = total_intervene_states / total_states * 100
+                f.write(f"Summary: {total_intervene_states}/{total_states} states trigger intervention ({pct:.1f}%)\n\n")
+            
+            # ================================================================
+            # OPTION C: PATH-SPECIFIC COUNTERFACTUALS
+            # ================================================================
+            f.write(f"\n{'='*80}\n")
+            f.write("PATH-SPECIFIC COUNTERFACTUAL ANALYSIS\n")
+            f.write(f"{'='*80}\n\n")
+            f.write("For 10 sample paths, shows E[Y] under different intervention times\n")
+            f.write("Optimal intervention time t* maximizes E[Y] for each specific path\n\n")
+            
+            for path in path_counterfactuals:
+                f.write(f"{'─'*80}\n")
+                f.write(f"PATH #{path['path_id'] + 1}\n")
+                f.write(f"{'─'*80}\n\n")
+                
+                # Show path
+                X_seq = [int(x) for x in path['X_sequence']]
+                U_seq = [int(u) for u in path['U_sequence']]
+                f.write(f"Health trajectory: X = {X_seq}\n")
+                f.write(f"Shock sequence:    U = {U_seq}\n\n")
+                
+                # Show counterfactuals
+                cf = path['counterfactuals']
+                f.write("Expected outcomes by intervention strategy:\n")
+                
+                # Find max value to mark optimal
+                max_val = max(cf.values())
+                
+                f.write(f"  Never intervene:  E[Y] = {cf['never']:.4f}")
+                if cf['never'] == max_val:
+                    f.write(" ← OPTIMAL")
+                f.write("\n")
+                
+                for t in range(1, 6):
+                    val = cf[f't={t}']
+                    f.write(f"  Intervene at t={t}: E[Y] = {val:.4f}")
+                    if val == max_val:
+                        f.write(" ← OPTIMAL")
+                    f.write("\n")
+                
+                # Show what policy actually does
+                optimal_t = path['optimal_t']
+                if optimal_t:
+                    f.write(f"\n✓ Optimal policy intervenes at t={optimal_t}\n")
+                else:
+                    f.write(f"\n✓ Optimal policy never intervenes\n")
+                
+                f.write("\n")
             
             f.write(f"{'='*80}\n")
         
