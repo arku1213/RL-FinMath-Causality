@@ -1,7 +1,16 @@
 import numpy as np
 
 class CausalOptimalStopping:
-
+    """
+    Causal Optimal Stopping with 3 Algorithms:
+    1. Standard Optimal Stopping
+    2. Bounds under Incomplete Information
+    3. Robust Optimal Stopping
+    
+    NEW: Mandatory intervention at boundary states {1, 2, 18, 19, 20}
+    NEW: Intervention timing analysis via simulation
+    """
+    
     def __init__(self, X0=10, prob_uncertainty=0.15, intervention_uncertainty=0.25):
         self.X0 = X0
         self.X_min, self.X_max = 1, 20
@@ -108,10 +117,10 @@ class CausalOptimalStopping:
         else:
             return 1  # Success
     
-    #================================================================
+    # ========================================================================
     # STANDARD OPTIMAL STOPPING
-    #================================================================
-
+    # ========================================================================
+    
     def solve_standard_optimal_stopping(self):
         """Standard Optimal Stopping: Find optimal intervention time
         
@@ -130,9 +139,9 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    #================================================
+                    # ============================================================
                     # BOUNDARY CHECK: Automatic intervention at boundary
-                    #================================================
+                    # ============================================================
                     if Xt in self.boundary_states:
                         # Already intervened (I=1) - stuck at boundary, certain death
                         self.value_function[(t, Xt, Ut, 1)] = 0.0
@@ -143,9 +152,9 @@ class CausalOptimalStopping:
                         self.value_function[(t, Xt, Ut, 0)] = intervene_val
                         self.policy[(t, Xt, Ut, 0)] = 'AUTO_INTERVENE'
                     
-                    #================================================
+                    # ============================================================
                     # NON-BOUNDARY: Normal optimal stopping logic
-                    #================================================
+                    # ============================================================
                     else:
                         # Already intervened (I=1) - can only continue
                         cont_used = self._continuation_value(t, Xt, Ut, True, 'standard')
@@ -203,10 +212,10 @@ class CausalOptimalStopping:
         
         return total
     
-    #================================================================
+    # ========================================================================
     # BOUNDS UNDER INCOMPLETE INFORMATION
-    #================================================================
-
+    # ========================================================================
+    
     def solve_bounds_incomplete_information(self):
         """Bounds under Incomplete Information: Compute upper and lower bounds on E[Y]
         
@@ -227,9 +236,9 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    #================================================
+                    # ============================================================
                     # BOUNDARY CHECK: Automatic intervention at boundary
-                    #================================================
+                    # ============================================================
                     if Xt in self.boundary_states:
                         # Already intervened (I=1) - certain death
                         self.value_lower[(t, Xt, Ut, 1)] = 0.0
@@ -240,10 +249,10 @@ class CausalOptimalStopping:
                         int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
                         self.value_lower[(t, Xt, Ut, 0)] = int_lower
                         self.value_upper[(t, Xt, Ut, 0)] = int_upper
-
-                    #================================================
+                    
+                    # ============================================================
                     # NON-BOUNDARY: Normal bounds logic
-                    #================================================
+                    # ============================================================
                     else:
                         # Already intervened
                         cont_lower = self._continuation_bounded(t, Xt, Ut, True, 'lower')
@@ -332,10 +341,10 @@ class CausalOptimalStopping:
             scenarios.append(total)
         
         return min(scenarios) if bound_type == 'lower' else max(scenarios)
-
-    #================================================================
+    
+    # ========================================================================
     # ROBUST OPTIMAL STOPPING
-    #================================================================
+    # ========================================================================
     
     def solve_robust_optimal_stopping(self):
         """Robust Optimal Stopping: Robust policy under uncertainty
@@ -352,16 +361,16 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    #================================================
+                    # ============================================================
                     # BOUNDARY CHECK: Automatic intervention at boundary
-                    #================================================
+                    # ============================================================
                     if Xt in self.boundary_states:
                         self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
                         self.robust_policy[(t, Xt, Ut, 0)] = 'AUTO_INTERVENE'
                     
-                    #================================================
+                    # ============================================================
                     # NON-BOUNDARY: Normal robust logic
-                    #================================================
+                    # ============================================================
                     else:
                         self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
                         
@@ -379,13 +388,95 @@ class CausalOptimalStopping:
                         else:
                             self.robust_policy[(t, Xt, Ut, 0)] = 'AMBIGUOUS'
     
-    #================================================================
-    # OUTPUT
-    #================================================================
+    # ========================================================================
+    # INTERVENTION TIMING ANALYSIS
+    # ========================================================================
     
-    def print_results(self, output_file='RESULTS.txt'):
+    def compute_intervention_timing(self, n_simulations=10000):
         """
-        Print results - saves ALL analysis to file
+        Simulate optimal policy from X0 and analyze when intervention occurs
+        
+        Returns:
+            dict with timing statistics
+        """
+        intervention_times = []
+        intervention_states = []  # Track (X, U) at intervention
+        
+        for sim in range(n_simulations):
+            X = self.X0
+            I = 0  # Start with intervention available
+            
+            # Generate U1 and transition to t=1
+            U_prev = np.random.choice(self.U_values, p=self.U_probs)
+            X = int(np.floor(X + U_prev/2))
+            X = np.clip(X, self.X_min, self.X_max)
+            
+            for t in range(1, 6):  # t=1,2,3,4,5
+                U_current = U_prev
+                
+                # Check if at boundary -> auto-intervention
+                if X in self.boundary_states and I == 0:
+                    intervention_times.append(t)
+                    intervention_states.append((X, U_current))
+                    I = 1
+                    X = self.apply_intervention(X)
+                
+                # Otherwise check policy
+                elif I == 0:
+                    policy = self.policy.get((t, X, U_current, 0), 'WAIT')
+                    
+                    if policy == 'INTERVENE' or policy == 'AUTO_INTERVENE':
+                        intervention_times.append(t)
+                        intervention_states.append((X, U_current))
+                        I = 1
+                        X = self.apply_intervention(X)
+                
+                # Transition to next period (if not at t=5)
+                if t < 5:
+                    U_next = np.random.choice(self.U_values, p=self.U_probs)
+                    if X < 3 or X > 17:
+                        # Boundary absorption
+                        pass
+                    else:
+                        X = int(np.floor(X + U_current/3 + U_next/2))
+                        X = np.clip(X, self.X_min, self.X_max)
+                    U_prev = U_next
+            
+            # If never intervened, record as None
+            if I == 0:
+                intervention_times.append(None)
+        
+        # Compute statistics
+        intervened = [t for t in intervention_times if t is not None]
+        never_intervened = intervention_times.count(None)
+        
+        time_distribution = {
+            1: intervention_times.count(1),
+            2: intervention_times.count(2),
+            3: intervention_times.count(3),
+            4: intervention_times.count(4),
+            5: intervention_times.count(5),
+            'never': never_intervened
+        }
+        
+        return {
+            'mean_time': np.mean(intervened) if intervened else None,
+            'median_time': np.median(intervened) if intervened else None,
+            'std_time': np.std(intervened) if intervened else None,
+            'intervention_rate': len(intervened) / n_simulations,
+            'never_rate': never_intervened / n_simulations,
+            'time_distribution': time_distribution,
+            'n_simulations': n_simulations,
+            'intervention_states': intervention_states
+        }
+    
+    # ========================================================================
+    # OUTPUT
+    # ========================================================================
+    
+    def print_results(self, output_file='RESULTS.txt', n_simulations=10000):
+        """
+        Print results - saves ALL analysis to file including timing analysis
         
         Shows all 280 states per time period (20 X × 7 U × 2 I)
         """
@@ -395,11 +486,14 @@ class CausalOptimalStopping:
         V3_lower, V3_upper = self.solve_bounds_incomplete_information()
         self.solve_robust_optimal_stopping()
         
+        # Compute intervention timing
+        timing = self.compute_intervention_timing(n_simulations)
+        
         # Open file for ALL output
         with open(output_file, 'w') as f:
-            #========================================================
+            # ================================================================
             # STANDARD OPTIMAL STOPPING
-            #========================================================
+            # ================================================================
             f.write(f"{'='*40}\n")
             f.write("STANDARD OPTIMAL STOPPING\n")
             f.write(f"{'='*40}\n\n")
@@ -440,9 +534,9 @@ class CausalOptimalStopping:
                         value_used = self.value_function.get((t, X, U, 1), 0)
                         f.write(f"  U_{t}={U:2d}, I=1: no_action, E[Y]={value_used:.4f}\n")
             
-            #========================================================
+            # ================================================================
             # BOUNDS UNDER INCOMPLETE INFORMATION
-            #========================================================
+            # ================================================================
             f.write(f"\n\n{'='*40}\n")
             f.write("BOUNDS UNDER INCOMPLETE INFORMATION\n")
             f.write(f"{'='*40}\n\n")
@@ -468,9 +562,9 @@ class CausalOptimalStopping:
                         width_used = V_upper_used - V_lower_used
                         f.write(f"  U_{t}={U:2d}, I=1: E[Y] ∈ [{V_lower_used:.4f}, {V_upper_used:.4f}], width={width_used:.4f}\n")
             
-            #========================================================
+            # ================================================================
             # ROBUST OPTIMAL STOPPING
-            #========================================================
+            # ================================================================
             f.write(f"\n\n{'='*40}\n")
             f.write("ROBUST OPTIMAL STOPPING\n")
             f.write(f"{'='*40}\n\n")
@@ -497,6 +591,49 @@ class CausalOptimalStopping:
                             symbol = '?'
                         f.write(f"  U_{t}={U:2d}, I=0: {symbol} {policy}\n")
                         f.write(f"  U_{t}={U:2d}, I=1: no_action\n")
+            
+            # ================================================================
+            # INTERVENTION TIMING ANALYSIS
+            # ================================================================
+            
+            # Summary statistics
+            f.write(f"{'─'*40}\n")
+            f.write("SUMMARY STATISTICS\n")
+            f.write(f"{'─'*40}\n\n")
+
+            if timing['mean_time']:
+                f.write(f"Expected intervention time (given intervention occurs):\n")
+                f.write(f"  Mean:   t = {timing['mean_time']:.2f}\n")
+                f.write(f"  Median: t = {timing['median_time']:.1f}\n")
+                f.write(f"  Std Dev:    {timing['std_time']:.2f}\n\n")
+            else:
+                f.write(f"No interventions occurred in any simulation!\n\n")
+            
+            f.write(f"Intervention rate: {timing['intervention_rate']*100:.2f}%\n")
+            f.write(f"  ({int(timing['intervention_rate'] * timing['n_simulations']):,} simulations used intervention)\n\n")
+            
+            f.write(f"Never intervene rate: {timing['never_rate']*100:.2f}%\n")
+            f.write(f"  ({timing['time_distribution']['never']:,} simulations never needed intervention)\n\n")
+            
+            # Time distribution
+            f.write(f"{'─'*40}\n")
+            f.write("DISTRIBUTION OF INTERVENTION TIMES\n")
+            f.write(f"{'─'*40}\n\n")
+            
+            for t in range(1, 6):
+                count = timing['time_distribution'][t]
+                pct = count / timing['n_simulations'] * 100
+                bar_length = int(pct * 0.5)  # Scale for display
+                bar = '█' * bar_length
+                f.write(f"  t={t}: {pct:6.2f}%  {bar}  ({count:,} times)\n")
+            
+            never = timing['time_distribution']['never']
+            pct_never = never / timing['n_simulations'] * 100
+            bar_length = int(pct_never * 0.5)
+            bar = '█' * bar_length
+            f.write(f"  Never: {pct_never:6.2f}%  {bar}  ({never:,} times)\n\n")
+            
+            f.write(f"{'='*80}\n")
         
         # Simple console confirmation
         print(f"✓ Analysis complete. Results saved to: {output_file}")
@@ -506,8 +643,8 @@ class CausalOptimalStopping:
 if __name__ == "__main__":
     model = CausalOptimalStopping(X0=10, prob_uncertainty=0.15, intervention_uncertainty=0.25)
     
-    # Solve optimal policies and generate output file
+    # Solve optimal policies and generate output file with timing analysis
     output_file = 'RESULTS.txt'
-    model.print_results(output_file)
+    model.print_results(output_file, n_simulations=10000)
     
-    print(f"Complete! View results in: {output_file}")
+    print(f"\nComplete! View results in: {output_file}")

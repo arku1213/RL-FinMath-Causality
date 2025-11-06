@@ -10,9 +10,9 @@ import time
 
 S0 = 100.0
 K = 100.0
-T_steps = 4
+T_steps = 5
 N = 4 
-NUM_BINARIES = 2 
+NUM_BINARIES = 4 
 sigma = 0.20
 
 NUM_SIMULATIONS = 20000
