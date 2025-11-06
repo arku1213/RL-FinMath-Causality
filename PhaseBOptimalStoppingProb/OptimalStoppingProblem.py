@@ -1,15 +1,7 @@
 import numpy as np
 
 class CausalOptimalStopping:
-    """
-    Causal Optimal Stopping with 3 Algorithms:
-    1. Standard Optimal Stopping
-    2. Bounds under Incomplete Information
-    3. Robust Optimal Stopping
-    
-    NEW: Mandatory intervention at boundary states {1, 2, 18, 19, 20}
-    """
-    
+
     def __init__(self, X0=10, prob_uncertainty=0.15, intervention_uncertainty=0.25):
         self.X0 = X0
         self.X_min, self.X_max = 1, 20
@@ -116,10 +108,10 @@ class CausalOptimalStopping:
         else:
             return 1  # Success
     
-    # ========================================================================
+    #================================================================
     # STANDARD OPTIMAL STOPPING
-    # ========================================================================
-    
+    #================================================================
+
     def solve_standard_optimal_stopping(self):
         """Standard Optimal Stopping: Find optimal intervention time
         
@@ -138,9 +130,9 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    # ============================================================
+                    #================================================
                     # BOUNDARY CHECK: Automatic intervention at boundary
-                    # ============================================================
+                    #================================================
                     if Xt in self.boundary_states:
                         # Already intervened (I=1) - stuck at boundary, certain death
                         self.value_function[(t, Xt, Ut, 1)] = 0.0
@@ -151,9 +143,9 @@ class CausalOptimalStopping:
                         self.value_function[(t, Xt, Ut, 0)] = intervene_val
                         self.policy[(t, Xt, Ut, 0)] = 'AUTO_INTERVENE'
                     
-                    # ============================================================
+                    #================================================
                     # NON-BOUNDARY: Normal optimal stopping logic
-                    # ============================================================
+                    #================================================
                     else:
                         # Already intervened (I=1) - can only continue
                         cont_used = self._continuation_value(t, Xt, Ut, True, 'standard')
@@ -211,10 +203,10 @@ class CausalOptimalStopping:
         
         return total
     
-    # ========================================================================
+    #================================================================
     # BOUNDS UNDER INCOMPLETE INFORMATION
-    # ========================================================================
-    
+    #================================================================
+
     def solve_bounds_incomplete_information(self):
         """Bounds under Incomplete Information: Compute upper and lower bounds on E[Y]
         
@@ -235,9 +227,9 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    # ============================================================
+                    #================================================
                     # BOUNDARY CHECK: Automatic intervention at boundary
-                    # ============================================================
+                    #================================================
                     if Xt in self.boundary_states:
                         # Already intervened (I=1) - certain death
                         self.value_lower[(t, Xt, Ut, 1)] = 0.0
@@ -248,10 +240,10 @@ class CausalOptimalStopping:
                         int_upper = self._intervention_bounded(t, Xt, Ut, 'upper')
                         self.value_lower[(t, Xt, Ut, 0)] = int_lower
                         self.value_upper[(t, Xt, Ut, 0)] = int_upper
-                    
-                    # ============================================================
+
+                    #================================================
                     # NON-BOUNDARY: Normal bounds logic
-                    # ============================================================
+                    #================================================
                     else:
                         # Already intervened
                         cont_lower = self._continuation_bounded(t, Xt, Ut, True, 'lower')
@@ -340,10 +332,10 @@ class CausalOptimalStopping:
             scenarios.append(total)
         
         return min(scenarios) if bound_type == 'lower' else max(scenarios)
-    
-    # ========================================================================
+
+    #================================================================
     # ROBUST OPTIMAL STOPPING
-    # ========================================================================
+    #================================================================
     
     def solve_robust_optimal_stopping(self):
         """Robust Optimal Stopping: Robust policy under uncertainty
@@ -360,16 +352,16 @@ class CausalOptimalStopping:
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
-                    # ============================================================
+                    #================================================
                     # BOUNDARY CHECK: Automatic intervention at boundary
-                    # ============================================================
+                    #================================================
                     if Xt in self.boundary_states:
                         self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
                         self.robust_policy[(t, Xt, Ut, 0)] = 'AUTO_INTERVENE'
                     
-                    # ============================================================
+                    #================================================
                     # NON-BOUNDARY: Normal robust logic
-                    # ============================================================
+                    #================================================
                     else:
                         self.robust_policy[(t, Xt, Ut, 1)] = 'no_action'
                         
@@ -387,9 +379,9 @@ class CausalOptimalStopping:
                         else:
                             self.robust_policy[(t, Xt, Ut, 0)] = 'AMBIGUOUS'
     
-    # ========================================================================
+    #================================================================
     # OUTPUT
-    # ========================================================================
+    #================================================================
     
     def print_results(self, output_file='RESULTS.txt'):
         """
@@ -405,9 +397,9 @@ class CausalOptimalStopping:
         
         # Open file for ALL output
         with open(output_file, 'w') as f:
-            # ================================================================
+            #========================================================
             # STANDARD OPTIMAL STOPPING
-            # ================================================================
+            #========================================================
             f.write(f"{'='*40}\n")
             f.write("STANDARD OPTIMAL STOPPING\n")
             f.write(f"{'='*40}\n\n")
@@ -448,9 +440,9 @@ class CausalOptimalStopping:
                         value_used = self.value_function.get((t, X, U, 1), 0)
                         f.write(f"  U_{t}={U:2d}, I=1: no_action, E[Y]={value_used:.4f}\n")
             
-            # ================================================================
+            #========================================================
             # BOUNDS UNDER INCOMPLETE INFORMATION
-            # ================================================================
+            #========================================================
             f.write(f"\n\n{'='*40}\n")
             f.write("BOUNDS UNDER INCOMPLETE INFORMATION\n")
             f.write(f"{'='*40}\n\n")
@@ -476,9 +468,9 @@ class CausalOptimalStopping:
                         width_used = V_upper_used - V_lower_used
                         f.write(f"  U_{t}={U:2d}, I=1: E[Y] ∈ [{V_lower_used:.4f}, {V_upper_used:.4f}], width={width_used:.4f}\n")
             
-            # ================================================================
+            #========================================================
             # ROBUST OPTIMAL STOPPING
-            # ================================================================
+            #========================================================
             f.write(f"\n\n{'='*40}\n")
             f.write("ROBUST OPTIMAL STOPPING\n")
             f.write(f"{'='*40}\n\n")
