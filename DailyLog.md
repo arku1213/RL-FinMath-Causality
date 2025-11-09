@@ -104,15 +104,22 @@ Day 22 - Tuesday, October 14th:
 - DDPG -> WORKED UP UNTIL N=5, T=4 in N-nomial case, just takes a while
 
 Day 23 - Wednesday, October 15th ->
-Day 30 - Friday, October 25th:
+Day 30 - Friday, October 24th:
 
 - Fixed code for Complete Replication Case, Complete Super-Replication & Incomplete Cases
   - These look good now - just take a while to run. Looking into ACENET to speed up the process.
 - Started Phase B, which is looking at the Optimal Stopping Problem, both using American Put Options and Causality (DAGs). This is standard Dynamic Programming, with Backward Induction, rather than RL.
 
+Day 31 - Monday, October 27th ->
+Day 40 - Friday, November 7th:
+
+- Got more clarity for Phase B - completely fixed code
+- Optimized Incomplete Case Code
+- Learned about ACENET + benefits
+
 Next goals:
 
-- Understand outputs in Phase B
-- Optimize Complete Replication Case, Complete Super-Replication & Incomplete Cases code
+- Fix Complete Replication Case & Trinomial Incomplete Case to match N-nomial Incomplete Case
+- Delete Complete Super-Replication Case
 - Adapt RL code for Causality
 - https://arxiv.org/pdf/2504.05521
