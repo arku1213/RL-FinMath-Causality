@@ -14,7 +14,7 @@ T_steps = 5
 N = 5 
 NUM_BINARIES = 4 
 sigma = 0.20
-
+USE_SIGMOID = (N >= 5 or T_steps >= 5)
 NUM_SIMULATIONS = 20000
 POLYNOMIAL_DEGREE = 4
 REGRESSION_ALPHA = 0.1
@@ -213,9 +213,10 @@ class LSMCEstimator:
 # NEURAL NETWORKS
 #==================================#
 class UniversalActor(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim, action_scale):
+    def __init__(self, state_dim, action_dim, hidden_dim, action_scale, use_sigmoid=False):
         super(UniversalActor, self).__init__()
         self.action_scale = action_scale
+        self.use_sigmoid = use_sigmoid
         
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.ln1 = nn.LayerNorm(hidden_dim)
@@ -234,7 +235,10 @@ class UniversalActor(nn.Module):
         x = torch.relu(self.ln1(self.fc1(state)))
         x = torch.relu(self.ln2(self.fc2(x)))
         x = torch.relu(self.ln3(self.fc3(x)))
-        x = F.softplus(self.fc4(x)) * self.action_scale
+        if self.use_sigmoid:
+            x = torch.sigmoid(self.fc4(x)) * self.action_scale
+        else:
+            x = F.softplus(self.fc4(x)) * self.action_scale
         return x
 
 class UniversalCritic(nn.Module):
@@ -326,9 +330,9 @@ class RewardNormalizer:
 # DDPG AGENT
 #==================================#
 class UniversalDDPGAgent:
-    def __init__(self, state_dim, action_dim, hidden_dim, action_scale):
-        self.actor = UniversalActor(state_dim, action_dim, hidden_dim, action_scale)
-        self.actor_target = UniversalActor(state_dim, action_dim, hidden_dim, action_scale)
+    def __init__(self, state_dim, action_dim, hidden_dim, action_scale, use_sigmoid=False):
+        self.actor = UniversalActor(state_dim, action_dim, hidden_dim, action_scale, use_sigmoid)
+        self.actor_target = UniversalActor(state_dim, action_dim, hidden_dim, action_scale, use_sigmoid)
         self.actor_target.load_state_dict(self.actor.state_dict())
         
         self.critic = UniversalCritic(state_dim, action_dim, hidden_dim)
@@ -466,7 +470,7 @@ def train_super_replication():
     
     # Phase 2: Training
     lsmc_estimator = LSMCEstimator(POLYNOMIAL_DEGREE, REGRESSION_ALPHA)
-    agent = UniversalDDPGAgent(state_dim=2, action_dim=NUM_BINARIES, hidden_dim=HIDDEN_DIM, action_scale=ACTION_SCALE)
+    agent = UniversalDDPGAgent(state_dim=2, action_dim=NUM_BINARIES, hidden_dim=HIDDEN_DIM, action_scale=ACTION_SCALE, use_sigmoid=USE_SIGMOID)
     reward_normalizer = RewardNormalizer(clip_range=10.0)
     
     best_avg_shortfall = float('inf')
