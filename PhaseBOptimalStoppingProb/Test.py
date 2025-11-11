@@ -6,25 +6,27 @@ class CausalOptimalStopping:
     1. Standard Optimal Stopping
     2. Fixed Intervention at Time k
     
-    Boundary states {1, 2, 18, 19, 20} are absorbing death states (no rescue possible)
+    Boundary states are absorbing death states (no rescue possible)
     """
     
     def __init__(self, X0=10):
-        self.X0 = X0
-        self.X_min, self.X_max = 1, 20
-        
-        # Boundary states are absorbing death states - no intervention can save you
-        self.boundary_states = [1, 2, 18, 19, 20]
-        
-        # Intervention parameters
+        self.T = 6
+        self.X_min, self.X_max = 1, 20 
+        self.X0 = X0 
+        self.safe_min = 3
+        self.safe_max = 17
         self.intervention_center = 10
         self.intervention_strength = 0.7
-        
-        # U values
         self.U_values = [-3, -2, -1, 0, 1, 2, 3]
-        self.U_probs = self._compute_U_probabilities()
+
+        # Boundary states (death zones)
+        self.boundary_states = (
+            list(range(self.X_min, self.safe_min)) +           # Low death zone
+            list(range(self.safe_max + 1, self.X_max + 1))     # High death zone
+        )
         
-        self.T = 6
+        # Shock probabilities
+        self.U_probs = self._compute_U_probabilities()
         
         # Storage
         self.value_function = {}         # Standard Optimal Stopping
@@ -53,13 +55,13 @@ class CausalOptimalStopping:
         Intervention pulls X toward center
         
         Formula: X_new = (1 - α) * X + α * center
-        where α = intervention_strength = 0.7
+        where α = intervention_strength
         
-        Then clip to safe bounds [3, 17]
+        Then clip to safe bounds [safe_min, safe_max]
         """
         X_pulled = (1 - self.intervention_strength) * X + self.intervention_strength * self.intervention_center
         X_intervened = int(np.round(X_pulled))
-        X_intervened = np.clip(X_intervened, 3, 17)
+        X_intervened = np.clip(X_intervened, self.safe_min, self.safe_max)
         return X_intervened
     
     def transition(self, X, U_current, U_next, intervene=False):
@@ -67,28 +69,30 @@ class CausalOptimalStopping:
         State transition with optional intervention
         
         If intervene=True: Apply intervention first, then transition
+        
+        Dynamics: X_{t+1} = floor(X_t + U_t/3 + U_{t+1}/2)
         """
         if intervene:
             X = self.apply_intervention(X)
         
         # Boundary behavior - absorbing states (stay at boundary)
-        if X < 3 or X > 17:
+        if X < self.safe_min or X > self.safe_max:
             return int(np.clip(X, self.X_min, self.X_max))
         
-        # Standard transition
+        # Standard transition: X_{t+1} = floor(X_t + U_t/3 + U_{t+1}/2)
         X_next = np.floor(X + U_current/3 + U_next/2)
         return int(np.clip(X_next, self.X_min, self.X_max))
     
-    def compute_Y(self, X6):
+    def compute_Y(self, XT):
         """
-        Binary outcome based on final health marker X₆
+        Binary outcome based on final health marker
         
-        Y = 0 if X₆ ∈ {1, 2, 18, 19, 20} (death states)
-        Y = 1 if X₆ ∈ {3, 4, ..., 16, 17} (survival)
+        Y = 0 if outside safe zone (death)
+        Y = 1 if in safe zone (survival)
         
         Returns: 0 or 1
         """
-        if X6 in [1, 2, 18, 19, 20]:
+        if XT < self.safe_min or XT > self.safe_max:
             return 0  # Death
         else:
             return 1  # Survival
@@ -100,25 +104,25 @@ class CausalOptimalStopping:
     def solve_standard_optimal_stopping(self):
         """Standard Optimal Stopping: Find optimal intervention time
         
-        Boundary states {1,2,18,19,20} are absorbing death states - no rescue
+        Boundary states are absorbing death states - no rescue
         """
         
-        # Terminal condition at t=6
-        for X6 in range(self.X_min, self.X_max + 1):
-            Y = self.compute_Y(X6)
-            for U6 in self.U_values:
-                self.value_function[(6, X6, U6, 0)] = Y
-                self.value_function[(6, X6, U6, 1)] = Y
+        # Terminal condition: value at final time equals outcome
+        for XT in range(self.X_min, self.X_max + 1):
+            Y = self.compute_Y(XT)
+            for UT in self.U_values:
+                self.value_function[(self.T, XT, UT, 0)] = Y
+                self.value_function[(self.T, XT, UT, 1)] = Y
         
-        # Backward induction
-        for t in range(5, 0, -1):
+        # Backward induction from T-1 down to 1
+        for t in range(self.T - 1, 0, -1):
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
                     # ============================================================
                     # BOUNDARY CHECK: Death states (no rescue possible)
                     # ============================================================
-                    if Xt in self.boundary_states:
+                    if Xt < self.safe_min or Xt > self.safe_max:
                         # At boundary - certain death regardless of I
                         self.value_function[(t, Xt, Ut, 0)] = 0.0
                         self.value_function[(t, Xt, Ut, 1)] = 0.0
@@ -192,7 +196,7 @@ class CausalOptimalStopping:
         Parameters:
         -----------
         k : int or None
-            Time to intervene (1, 2, 3, 4, 5) or None for "never intervene"
+            Time to intervene (1, 2, ..., T-1) or None for "never intervene"
         
         Returns:
         --------
@@ -203,19 +207,19 @@ class CausalOptimalStopping:
         # Clear storage for this specific k
         value_fixed_k = {}
         
-        # Terminal condition at t=6
-        for X6 in range(self.X_min, self.X_max + 1):
-            Y = self.compute_Y(X6)
-            for U6 in self.U_values:
-                value_fixed_k[(6, X6, U6)] = Y
+        # Terminal condition: value at final time equals outcome
+        for XT in range(self.X_min, self.X_max + 1):
+            Y = self.compute_Y(XT)
+            for UT in self.U_values:
+                value_fixed_k[(self.T, XT, UT)] = Y
         
-        # Backward induction
-        for t in range(5, 0, -1):
+        # Backward induction from T-1 down to 1
+        for t in range(self.T - 1, 0, -1):
             for Xt in range(self.X_min, self.X_max + 1):
                 for Ut in self.U_values:
                     
                     # Check if at boundary (death state)
-                    if Xt in self.boundary_states:
+                    if Xt < self.safe_min or Xt > self.safe_max:
                         value_fixed_k[(t, Xt, Ut)] = 0.0
                         continue
                     
@@ -272,7 +276,7 @@ class CausalOptimalStopping:
         # Solve fixed intervention policies
         fixed_results = {}
         fixed_results['never'] = self.solve_fixed_intervention_at_k(k=None)
-        for k in range(1, 6):
+        for k in range(1, self.T):  # All decision times: 1, 2, ..., T-1
             fixed_results[f't={k}'] = self.solve_fixed_intervention_at_k(k=k)
         
         # Open file for output
@@ -299,7 +303,7 @@ class CausalOptimalStopping:
                         # State (X, U, I=0) - haven't intervened yet
                         value = self.value_function.get((t, X, U, 0), 0)
                         
-                        if t == 6:
+                        if t == self.T:
                             # Terminal time - no policy, just show value
                             f.write(f"  U_{t}={U:2d}, I=0: E[Y]={value:.4f}\n")
                         else:
@@ -318,7 +322,7 @@ class CausalOptimalStopping:
                         # State (X, U, I=1) - already intervened
                         value_used = self.value_function.get((t, X, U, 1), 0)
                         policy_used = self.policy.get((t, X, U, 1), '?')
-                        if policy_used == 'no_action' and X in self.boundary_states:
+                        if policy_used == 'no_action' and (X < self.safe_min or X > self.safe_max):
                             f.write(f"  U_{t}={U:2d}, I=1: ☠️  DEATH (boundary state), E[Y]={value_used:.4f}\n")
                         else:
                             f.write(f"  U_{t}={U:2d}, I=1: no_action, E[Y]={value_used:.4f}\n")
@@ -341,7 +345,7 @@ class CausalOptimalStopping:
             best_val = fixed_results[best_k]
             
             f.write(f"  Never intervene:            E[Y] = {fixed_results['never']:.4f}\n")
-            for k in range(1, 6):
+            for k in range(1, self.T):
                 val = fixed_results[f't={k}']
                 marker = " ← Best fixed policy" if f't={k}' == best_k else ""
                 f.write(f"  Always intervene at t={k}:      E[Y] = {val:.4f}{marker}\n")
