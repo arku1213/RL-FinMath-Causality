@@ -5,8 +5,6 @@ class CausalOptimalStopping:
     Causal Optimal Stopping with 2 Algorithms:
     1. Standard Optimal Stopping
     2. Fixed Intervention at Time k
-    
-    Boundary states are absorbing death states (no rescue possible)
     """
     
     def __init__(self, X0=10):
