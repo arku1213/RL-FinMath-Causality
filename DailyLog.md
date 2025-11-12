@@ -122,4 +122,6 @@ Next goals:
 - Fix Complete Replication Case & Trinomial Incomplete Case to match N-nomial Incomplete Case
 - Delete Complete Super-Replication Case
 - Adapt RL code for Causality
+- RL for Phase B
+- Math for Phase B
 - https://arxiv.org/pdf/2504.05521
