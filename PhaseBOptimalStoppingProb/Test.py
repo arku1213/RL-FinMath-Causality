@@ -221,49 +221,42 @@ class CausalOptimalStopping:
     
     def extract_threshold_policy(self):
         """
-        Extract intervention thresholds from optimal policy
+        Extract intervention sets from optimal policy
         
-        For each time t, finds:
-        - x_low: highest X where we intervene due to low health
-        - x_high: lowest X where we intervene due to high health
+        For each time t, finds all X values where intervention happens
+        (averaging over U values)
         
         Returns:
         --------
         thresholds : dict
-            {t: (x_low, x_high)} for each decision time
+            {t: {'low': [list of low X], 'high': [list of high X]}} for each decision time
         """
         thresholds = {}
         
         for t in range(1, self.T):
-            # Find intervention boundaries by looking at policy across all (X, U)
-            # Average over U to get typical threshold
+            intervene_states_low = []
+            intervene_states_high = []
             
-            low_boundary = self.safe_min  # Start at lowest safe state
-            high_boundary = self.safe_max  # Start at highest safe state
-            
-            # For each X, check if intervention happens for any U
-            for X in range(self.safe_min, self.safe_max + 1):
+            # Check each X value
+            for X in range(self.X_min, self.X_max + 1):
+                # Count how many U values lead to intervention at this X
                 intervene_count = 0
-                total_count = 0
-                
                 for U in self.U_values:
                     policy = self.policy.get((t, X, U, 0), 'WAIT')
                     if policy == 'INTERVENE':
                         intervene_count += 1
-                    total_count += 1
                 
-                # If majority of shocks lead to intervention, this X is in intervention region
-                if intervene_count > total_count / 2:
+                # If majority of shocks lead to intervention, include this X
+                if intervene_count > len(self.U_values) / 2:
                     if X < self.intervention_center:
-                        low_boundary = max(low_boundary, X)
+                        intervene_states_low.append(X)
                     else:
-                        high_boundary = min(high_boundary, X)
+                        intervene_states_high.append(X)
             
-            # Threshold is boundary + 1 (intervene if X < threshold or X > threshold)
-            x_low = low_boundary + 1
-            x_high = high_boundary - 1
-            
-            thresholds[t] = (x_low, x_high)
+            thresholds[t] = {
+                'low': intervene_states_low,
+                'high': intervene_states_high
+            }
         
         return thresholds
     
@@ -279,9 +272,9 @@ class CausalOptimalStopping:
         - Lower boundary: intervene if X < this threshold
         - Upper boundary: intervene if X > this threshold
         
-        Similar to the example image with mesh grid and color gradient
+        Enhanced version with proper legend and labels
         """
-        fig = plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(16, 12))
         ax = fig.add_subplot(111, projection='3d')
         
         # Create grid for time and shock
@@ -297,55 +290,79 @@ class CausalOptimalStopping:
         # For each (t, U) combination, find intervention boundaries
         for i, t in enumerate(times):
             for j, U in enumerate(self.U_values):
-                # Find lowest X where INTERVENE (lower boundary)
+                # Find lowest X where INTERVENE starts (scanning from safe_min upward)
                 lower_X = self.safe_min
+                found_lower = False
                 for X in range(self.safe_min, self.intervention_center + 1):
                     policy = self.policy.get((t, X, U, 0), 'WAIT')
                     if policy == 'INTERVENE':
-                        lower_X = X
-                    else:
-                        break  # Found the boundary
+                        lower_X = X + 0.5  # Boundary is between X and X+1
+                        found_lower = True
+                        break
                 
-                # Find highest X where INTERVENE (upper boundary)
+                if not found_lower:
+                    # No intervention in lower region for this (t, U)
+                    lower_X = self.safe_min
+                
+                # Find highest X where INTERVENE starts (scanning from safe_max downward)
                 upper_X = self.safe_max
+                found_upper = False
                 for X in range(self.safe_max, self.intervention_center - 1, -1):
                     policy = self.policy.get((t, X, U, 0), 'WAIT')
                     if policy == 'INTERVENE':
-                        upper_X = X
-                    else:
-                        break  # Found the boundary
+                        upper_X = X - 0.5  # Boundary is between X-1 and X
+                        found_upper = True
+                        break
+                
+                if not found_upper:
+                    # No intervention in upper region for this (t, U)
+                    upper_X = self.safe_max
                 
                 lower_boundary[j, i] = lower_X
                 upper_boundary[j, i] = upper_X
         
         # Plot lower boundary surface (red/pink gradient)
         surf1 = ax.plot_surface(T_grid, lower_boundary, U_mesh, 
-                                cmap=cm.Reds, alpha=0.8, 
-                                edgecolor='black', linewidth=0.3,
-                                vmin=self.safe_min, vmax=self.safe_max)
+                                cmap=cm.Reds, alpha=0.9, 
+                                edgecolor='black', linewidth=0.5,
+                                vmin=self.safe_min, vmax=self.safe_max,
+                                label='Lower Boundary')
         
         # Plot upper boundary surface (blue/purple gradient)
         surf2 = ax.plot_surface(T_grid, upper_boundary, U_mesh, 
-                                cmap=cm.Blues, alpha=0.8, 
-                                edgecolor='black', linewidth=0.3,
-                                vmin=self.safe_min, vmax=self.safe_max)
+                                cmap=cm.Blues, alpha=0.9, 
+                                edgecolor='black', linewidth=0.5,
+                                vmin=self.safe_min, vmax=self.safe_max,
+                                label='Upper Boundary')
         
-        # Labels
-        ax.set_xlabel('Time (t)', fontsize=14, labelpad=10)
-        ax.set_ylabel('Health State (X)', fontsize=14, labelpad=10)
-        ax.set_zlabel('Shock (U)', fontsize=14, labelpad=10)
-        ax.set_title('Intervention Boundary Surfaces', fontsize=16, pad=20)
+        # Labels with larger font
+        ax.set_xlabel('Time (t)', fontsize=16, labelpad=15, fontweight='bold')
+        ax.set_ylabel('Health State (X)', fontsize=16, labelpad=15, fontweight='bold')
+        ax.set_zlabel('Shock (U)', fontsize=16, labelpad=15, fontweight='bold')
+        ax.set_title('Intervention Boundary Surfaces', fontsize=20, pad=25, fontweight='bold')
         
         # Set limits
         ax.set_xlim(0.5, self.T - 0.5)
         ax.set_ylim(self.safe_min - 0.5, self.safe_max + 0.5)
         ax.set_zlim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
         
+        # Tick parameters
+        ax.tick_params(axis='both', which='major', labelsize=12)
+        
         # Grid
-        ax.grid(True, alpha=0.3)
+        ax.grid(True, alpha=0.4, linewidth=0.5)
+        
+        # Create custom legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='lightcoral', edgecolor='black', label='Lower Boundary (Intervene if X below)'),
+            Patch(facecolor='lightblue', edgecolor='black', label='Upper Boundary (Intervene if X above)'),
+            Patch(facecolor='white', edgecolor='gray', label='Gap = WAIT Region', alpha=0.5)
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=12, framealpha=0.9)
         
         # Viewing angle for best visualization
-        ax.view_init(elev=20, azim=45)
+        ax.view_init(elev=25, azim=45)
         
         # Save
         plt.tight_layout()
@@ -432,8 +449,21 @@ class CausalOptimalStopping:
             f.write(f"{'='*80}\n\n")
             
             for t in range(1, self.T):
-                x_low, x_high = thresholds[t]
-                f.write(f"At time t={t}: Intervene if X < {x_low} or X > {x_high}\n")
+                low_states = thresholds[t]['low']
+                high_states = thresholds[t]['high']
+                
+                # Format as sets
+                if low_states:
+                    low_str = '{' + ', '.join(map(str, low_states)) + '}'
+                else:
+                    low_str = '∅'
+                
+                if high_states:
+                    high_str = '{' + ', '.join(map(str, high_states)) + '}'
+                else:
+                    high_str = '∅'
+                
+                f.write(f"At time t={t}: Intervene if X ∈ {low_str} or X ∈ {high_str}\n")
             
             # ================================================================
             # 3D VISUALIZATION
