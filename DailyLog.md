@@ -119,6 +119,12 @@ Day 40 - Friday, November 7th:
 
 Next goals:
 
+- Get intervention value that maximizes E(Y) -look through all intervention values
+  3D Visualization - discrete
+  If at t =1 -> if X > 14 or X <7 , for each time
+  Best intervention at that specific time - Ex. Doctor can only come on Day 3
+  Gather evidence from betting paper against certain casual model
+
 - Fix Complete Replication Case & Trinomial Incomplete Case to match N-nomial Incomplete Case
 - Delete Complete Super-Replication Case
 - Adapt RL code for Causality
