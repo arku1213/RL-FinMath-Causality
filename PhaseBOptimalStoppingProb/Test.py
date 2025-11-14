@@ -1,13 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from matplotlib import cm
 
 class CausalOptimalStopping:
     """
-    Causal Optimal Stopping with 2 Algorithms:
+    Causal Optimal Stopping with 3 Algorithms:
     1. Standard Optimal Stopping (with optimal intervention choice)
     2. Threshold Policy Extraction: Extract intervention thresholds from optimal policy
+    3. Optimal Intervention at Fixed Time k (mandatory intervention with optimal target)
     
     Boundary states are absorbing death states (no rescue possible)
     """
@@ -216,153 +216,213 @@ class CausalOptimalStopping:
         return total
     
     # ========================================================================
+    # ALGORITHM 3: OPTIMAL INTERVENTION AT FIXED TIME k
+    # ========================================================================
+    
+    def solve_optimal_intervention_at_fixed_k(self, k):
+        """
+        Algorithm 3: Optimal Intervention at Fixed Time k
+        
+        Everyone MUST intervene at time k, but they choose the optimal target
+        based on their state (Xk, Uk).
+        
+        Parameters:
+        -----------
+        k : int
+            Time to intervene (1, 2, ..., T-1)
+        
+        Returns:
+        --------
+        E[Y] : float
+            Expected outcome under this policy
+        optimal_targets : dict
+            {(Xk, Uk): optimal_target} for each state at time k
+        """
+        
+        # Storage for this specific k
+        value_k = {}
+        optimal_targets_k = {}
+        
+        # Step 1: Backward induction from T down to k+1
+        # Terminal condition
+        for XT in range(self.X_min, self.X_max + 1):
+            Y = self.compute_Y(XT)
+            for UT in self.U_values:
+                value_k[(self.T, XT, UT)] = Y
+        
+        # Backward from T-1 to k+1 (no intervention yet)
+        for t in range(self.T - 1, k, -1):
+            for Xt in range(self.X_min, self.X_max + 1):
+                for Ut in self.U_values:
+                    # Check if at boundary
+                    if Xt < self.safe_min or Xt > self.safe_max:
+                        value_k[(t, Xt, Ut)] = 0.0
+                        continue
+                    
+                    # Just transition (no intervention possible yet)
+                    V = 0.0
+                    for U_next in self.U_values:
+                        prob = self.U_probs[self.U_values.index(U_next)]
+                        X_next = self.transition(Xt, Ut, U_next, intervene=False)
+                        V += prob * value_k[(t+1, X_next, U_next)]
+                    
+                    value_k[(t, Xt, Ut)] = V
+        
+        # Step 2: At time k, choose optimal intervention target for each state
+        for Xk in range(self.X_min, self.X_max + 1):
+            for Uk in self.U_values:
+                # Check if at boundary
+                if Xk < self.safe_min or Xk > self.safe_max:
+                    value_k[(k, Xk, Uk)] = 0.0
+                    optimal_targets_k[(Xk, Uk)] = None
+                    continue
+                
+                # Try all intervention targets, pick best
+                best_value = -np.inf
+                best_target = None
+                
+                for r in range(self.safe_min, self.safe_max + 1):
+                    # Intervene to r, then see what happens
+                    V = 0.0
+                    for U_next in self.U_values:
+                        prob = self.U_probs[self.U_values.index(U_next)]
+                        X_next = self.transition(r, Uk, U_next, intervene=False)
+                        V += prob * value_k[(k+1, X_next, U_next)]
+                    
+                    if V > best_value:
+                        best_value = V
+                        best_target = r
+                
+                value_k[(k, Xk, Uk)] = best_value
+                optimal_targets_k[(Xk, Uk)] = best_target
+        
+        # Step 3: Backward induction from k-1 down to 1
+        for t in range(k - 1, 0, -1):
+            for Xt in range(self.X_min, self.X_max + 1):
+                for Ut in self.U_values:
+                    # Check if at boundary
+                    if Xt < self.safe_min or Xt > self.safe_max:
+                        value_k[(t, Xt, Ut)] = 0.0
+                        continue
+                    
+                    # Just transition (intervention will happen at k)
+                    V = 0.0
+                    for U_next in self.U_values:
+                        prob = self.U_probs[self.U_values.index(U_next)]
+                        X_next = self.transition(Xt, Ut, U_next, intervene=False)
+                        V += prob * value_k[(t+1, X_next, U_next)]
+                    
+                    value_k[(t, Xt, Ut)] = V
+        
+        # Step 4: Compute E[Y] from initial state
+        E_Y = 0.0
+        for U1 in self.U_values:
+            prob = self.U_probs[self.U_values.index(U1)]
+            X1 = int(np.floor(self.X0 + U1/2))
+            X1 = np.clip(X1, self.X_min, self.X_max)
+            E_Y += prob * value_k.get((1, X1, U1), 0)
+        
+        return E_Y, optimal_targets_k
+    
+    # ========================================================================
     # THRESHOLD POLICY EXTRACTION
     # ========================================================================
     
-    def extract_threshold_policy(self):
+    def extract_threshold_policy_detailed(self):
         """
-        Extract intervention sets from optimal policy
+        Extract detailed intervention thresholds from optimal policy
         
-        For each time t, finds all X values where intervention happens
-        (averaging over U values)
+        For each (t, U), finds all X values where intervention happens
         
         Returns:
         --------
         thresholds : dict
-            {t: {'low': [list of low X], 'high': [list of high X]}} for each decision time
+            {(t, U): [list of X values where intervene]}
         """
         thresholds = {}
         
         for t in range(1, self.T):
-            intervene_states_low = []
-            intervene_states_high = []
-            
-            # Check each X value
-            for X in range(self.X_min, self.X_max + 1):
-                # Count how many U values lead to intervention at this X
-                intervene_count = 0
-                for U in self.U_values:
+            for U in self.U_values:
+                intervene_states = []
+                
+                for X in range(self.X_min, self.X_max + 1):
                     policy = self.policy.get((t, X, U, 0), 'WAIT')
                     if policy == 'INTERVENE':
-                        intervene_count += 1
+                        intervene_states.append(X)
                 
-                # If majority of shocks lead to intervention, include this X
-                if intervene_count > len(self.U_values) / 2:
-                    if X < self.intervention_center:
-                        intervene_states_low.append(X)
-                    else:
-                        intervene_states_high.append(X)
-            
-            thresholds[t] = {
-                'low': intervene_states_low,
-                'high': intervene_states_high
-            }
+                thresholds[(t, U)] = intervene_states
         
         return thresholds
     
     # ========================================================================
-    # 3D MESH SURFACE VISUALIZATION
+    # 3D SCATTER VISUALIZATION (ORIGINAL)
     # ========================================================================
     
-    def plot_intervention_boundaries_mesh(self, filename='intervention_boundaries_3d.png'):
+    def plot_intervention_boundaries_3d(self, filename='intervention_boundaries_3d.png'):
         """
-        Create 3D mesh surface plot showing intervention boundaries
+        Create 3D scatter plot of intervention boundaries in (t, X, U) space
         
-        Two surfaces:
-        - Lower boundary: intervene if X < this threshold
-        - Upper boundary: intervene if X > this threshold
-        
-        Enhanced version with proper legend and labels
+        Shows which states lead to INTERVENE vs WAIT vs DEATH decisions
+        (Original version with dots and X's)
         """
-        fig = plt.figure(figsize=(16, 12))
+        fig = plt.figure(figsize=(14, 10))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Create grid for time and shock
-        times = np.arange(1, self.T)  # t = 1, 2, 3, 4, 5
-        U_grid = np.array(self.U_values)
+        # Collect points for each policy type
+        intervene_points = {'t': [], 'X': [], 'U': []}
+        wait_points = {'t': [], 'X': [], 'U': []}
+        death_points = {'t': [], 'X': [], 'U': []}
         
-        T_grid, U_mesh = np.meshgrid(times, U_grid)
-        
-        # Initialize surfaces
-        lower_boundary = np.zeros_like(T_grid, dtype=float)
-        upper_boundary = np.zeros_like(T_grid, dtype=float)
-        
-        # For each (t, U) combination, find intervention boundaries
-        for i, t in enumerate(times):
-            for j, U in enumerate(self.U_values):
-                # Find lowest X where INTERVENE starts (scanning from safe_min upward)
-                lower_X = self.safe_min
-                found_lower = False
-                for X in range(self.safe_min, self.intervention_center + 1):
-                    policy = self.policy.get((t, X, U, 0), 'WAIT')
+        # Loop through all states (only I=0, where decisions happen)
+        for t in range(1, self.T):
+            for X in range(self.X_min, self.X_max + 1):
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    
                     if policy == 'INTERVENE':
-                        lower_X = X + 0.5  # Boundary is between X and X+1
-                        found_lower = True
-                        break
-                
-                if not found_lower:
-                    # No intervention in lower region for this (t, U)
-                    lower_X = self.safe_min
-                
-                # Find highest X where INTERVENE starts (scanning from safe_max downward)
-                upper_X = self.safe_max
-                found_upper = False
-                for X in range(self.safe_max, self.intervention_center - 1, -1):
-                    policy = self.policy.get((t, X, U, 0), 'WAIT')
-                    if policy == 'INTERVENE':
-                        upper_X = X - 0.5  # Boundary is between X-1 and X
-                        found_upper = True
-                        break
-                
-                if not found_upper:
-                    # No intervention in upper region for this (t, U)
-                    upper_X = self.safe_max
-                
-                lower_boundary[j, i] = lower_X
-                upper_boundary[j, i] = upper_X
+                        intervene_points['t'].append(t)
+                        intervene_points['X'].append(X)
+                        intervene_points['U'].append(U)
+                    elif policy == 'WAIT':
+                        wait_points['t'].append(t)
+                        wait_points['X'].append(X)
+                        wait_points['U'].append(U)
+                    elif policy == 'no_action':
+                        death_points['t'].append(t)
+                        death_points['X'].append(X)
+                        death_points['U'].append(U)
         
-        # Plot lower boundary surface (red/pink gradient)
-        surf1 = ax.plot_surface(T_grid, lower_boundary, U_mesh, 
-                                cmap=cm.Reds, alpha=0.9, 
-                                edgecolor='black', linewidth=0.5,
-                                vmin=self.safe_min, vmax=self.safe_max,
-                                label='Lower Boundary')
+        # Plot each category
+        if len(intervene_points['t']) > 0:
+            ax.scatter(intervene_points['t'], intervene_points['X'], intervene_points['U'],
+                      c='red', marker='o', s=50, alpha=0.6, label='INTERVENE')
         
-        # Plot upper boundary surface (blue/purple gradient)
-        surf2 = ax.plot_surface(T_grid, upper_boundary, U_mesh, 
-                                cmap=cm.Blues, alpha=0.9, 
-                                edgecolor='black', linewidth=0.5,
-                                vmin=self.safe_min, vmax=self.safe_max,
-                                label='Upper Boundary')
+        if len(wait_points['t']) > 0:
+            ax.scatter(wait_points['t'], wait_points['X'], wait_points['U'],
+                      c='blue', marker='o', s=30, alpha=0.3, label='WAIT')
         
-        # Labels with larger font
-        ax.set_xlabel('Time (t)', fontsize=16, labelpad=15, fontweight='bold')
-        ax.set_ylabel('Health State (X)', fontsize=16, labelpad=15, fontweight='bold')
-        ax.set_zlabel('Shock (U)', fontsize=16, labelpad=15, fontweight='bold')
-        ax.set_title('Intervention Boundary Surfaces', fontsize=20, pad=25, fontweight='bold')
+        if len(death_points['t']) > 0:
+            ax.scatter(death_points['t'], death_points['X'], death_points['U'],
+                      c='black', marker='x', s=40, alpha=0.8, label='DEATH')
         
-        # Set limits
+        # Labels and title
+        ax.set_xlabel('Time (t)', fontsize=14, labelpad=10)
+        ax.set_ylabel('Health State (X)', fontsize=14, labelpad=10)
+        ax.set_zlabel('Shock (U)', fontsize=14, labelpad=10)
+        ax.set_title('Intervention Boundaries in (t, X, U) Space', fontsize=16, pad=20)
+        
+        # Set axis limits
         ax.set_xlim(0.5, self.T - 0.5)
-        ax.set_ylim(self.safe_min - 0.5, self.safe_max + 0.5)
+        ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
         ax.set_zlim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
+        # Set custom ticks for X-axis (increment by 2)
+        ax.set_yticks(range(0, self.X_max + 1, 2))  # Y-axis is Health State (X): 0, 2, 4, 6, ..., 20
         
-        # Tick parameters
-        ax.tick_params(axis='both', which='major', labelsize=12)
+        # Legend
+        ax.legend(loc='upper left', fontsize=12)
         
         # Grid
-        ax.grid(True, alpha=0.4, linewidth=0.5)
-        
-        # Create custom legend
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='lightcoral', edgecolor='black', label='Lower Boundary (Intervene if X below)'),
-            Patch(facecolor='lightblue', edgecolor='black', label='Upper Boundary (Intervene if X above)'),
-            Patch(facecolor='white', edgecolor='gray', label='Gap = WAIT Region', alpha=0.5)
-        ]
-        ax.legend(handles=legend_elements, loc='upper left', fontsize=12, framealpha=0.9)
-        
-        # Viewing angle for best visualization
-        ax.view_init(elev=25, azim=45)
+        ax.grid(True, alpha=0.3)
         
         # Save
         plt.tight_layout()
@@ -381,17 +441,26 @@ class CausalOptimalStopping:
         
         Shows:
         1. Standard Optimal Stopping (all states) with optimal intervention targets
-        2. Threshold Policy extracted from optimal policy
+        2. Threshold Policy extracted from optimal policy (detailed by t and U)
+        3. Algorithm 3: Optimal Intervention at Fixed Time k
         """
         
-        # Solve algorithms
+        # Solve Algorithm 1
         V_optimal = self.solve_standard_optimal_stopping()
         
-        # Extract thresholds
-        thresholds = self.extract_threshold_policy()
+        # Extract detailed thresholds
+        thresholds = self.extract_threshold_policy_detailed()
+        
+        # Solve Algorithm 3 for all k
+        alg3_results = {}
+        alg3_targets = {}
+        for k in range(1, self.T):
+            E_Y, targets = self.solve_optimal_intervention_at_fixed_k(k)
+            alg3_results[k] = E_Y
+            alg3_targets[k] = targets
         
         # Generate visualization
-        viz_filename = self.plot_intervention_boundaries_mesh()
+        viz_filename = self.plot_intervention_boundaries_3d()
         
         # Open file for output
         with open(output_file, 'w') as f:
@@ -449,21 +518,29 @@ class CausalOptimalStopping:
             f.write(f"{'='*80}\n\n")
             
             for t in range(1, self.T):
-                low_states = thresholds[t]['low']
-                high_states = thresholds[t]['high']
-                
-                # Format as sets
-                if low_states:
-                    low_str = '{' + ', '.join(map(str, low_states)) + '}'
-                else:
-                    low_str = '∅'
-                
-                if high_states:
-                    high_str = '{' + ', '.join(map(str, high_states)) + '}'
-                else:
-                    high_str = '∅'
-                
-                f.write(f"At time t={t}: Intervene if X ∈ {low_str} or X ∈ {high_str}\n")
+                f.write(f"\nAt time t={t}:\n")
+                for U in self.U_values:
+                    intervene_states = thresholds[(t, U)]
+                    if intervene_states:
+                        states_str = '{' + ', '.join(map(str, intervene_states)) + '}'
+                    else:
+                        states_str = '∅'
+                    f.write(f"  U={U:2d}: Intervene if X ∈ {states_str}\n")
+            
+            # ================================================================
+            # OPTIMAL INTERVENTION AT FIXED TIME k
+            # ================================================================
+            f.write(f"\n\n{'='*80}\n")
+            f.write("OPTIMAL INTERVENTION AT FIXED TIME k\n")
+            f.write(f"{'='*80}\n\n")
+            f.write("Everyone must intervene at time k, choosing optimal target based on state.\n\n")
+            
+            # Summary table
+            f.write("COMPARISON:\n")
+            f.write(f"{'─'*80}\n")
+            for k in range(1, self.T):
+                E_Y = alg3_results[k]
+                f.write(f"  Optimal intervention at k={k}:  E[Y] = {E_Y:.4f}\n")
             
             # ================================================================
             # 3D VISUALIZATION

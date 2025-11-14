@@ -1952,11 +1952,66 @@ X_6=20:
 THRESHOLD POLICY
 ================================================================================
 
-At time t=1: Intervene if X ∈ {3, 4} or X ∈ {17}
-At time t=2: Intervene if X ∈ {3, 4} or X ∈ {17}
-At time t=3: Intervene if X ∈ {3, 4} or X ∈ {17}
-At time t=4: Intervene if X ∈ {3, 4} or X ∈ {17}
-At time t=5: Intervene if X ∈ {3, 4} or X ∈ {17}
+
+At time t=1:
+  U=-3: Intervene if X ∈ {3, 4, 5}
+  U=-2: Intervene if X ∈ {3, 4, 5}
+  U=-1: Intervene if X ∈ {3, 4, 17}
+  U= 0: Intervene if X ∈ {3, 4, 17}
+  U= 1: Intervene if X ∈ {3, 4, 17}
+  U= 2: Intervene if X ∈ {3, 16, 17}
+  U= 3: Intervene if X ∈ {3, 16, 17}
+
+At time t=2:
+  U=-3: Intervene if X ∈ {3, 4, 5}
+  U=-2: Intervene if X ∈ {3, 4, 5}
+  U=-1: Intervene if X ∈ {3, 4, 17}
+  U= 0: Intervene if X ∈ {3, 4, 17}
+  U= 1: Intervene if X ∈ {3, 4, 17}
+  U= 2: Intervene if X ∈ {3, 16, 17}
+  U= 3: Intervene if X ∈ {3, 16, 17}
+
+At time t=3:
+  U=-3: Intervene if X ∈ {3, 4, 5}
+  U=-2: Intervene if X ∈ {3, 4, 5}
+  U=-1: Intervene if X ∈ {3, 4, 17}
+  U= 0: Intervene if X ∈ {3, 4, 17}
+  U= 1: Intervene if X ∈ {3, 4, 17}
+  U= 2: Intervene if X ∈ {3, 16, 17}
+  U= 3: Intervene if X ∈ {3, 16, 17}
+
+At time t=4:
+  U=-3: Intervene if X ∈ {3, 4, 5}
+  U=-2: Intervene if X ∈ {3, 4, 5}
+  U=-1: Intervene if X ∈ {3, 4, 17}
+  U= 0: Intervene if X ∈ {3, 4, 17}
+  U= 1: Intervene if X ∈ {3, 4, 17}
+  U= 2: Intervene if X ∈ {3, 16, 17}
+  U= 3: Intervene if X ∈ {3, 16, 17}
+
+At time t=5:
+  U=-3: Intervene if X ∈ {3, 4, 5}
+  U=-2: Intervene if X ∈ {3, 4, 5}
+  U=-1: Intervene if X ∈ {3, 4, 17}
+  U= 0: Intervene if X ∈ {3, 4, 17}
+  U= 1: Intervene if X ∈ {3, 4, 17}
+  U= 2: Intervene if X ∈ {3, 16, 17}
+  U= 3: Intervene if X ∈ {3, 16, 17}
+
+
+================================================================================
+OPTIMAL INTERVENTION AT FIXED TIME k
+================================================================================
+
+Everyone must intervene at time k, choosing optimal target based on state.
+
+COMPARISON:
+────────────────────────────────────────────────────────────────────────────────
+  Optimal intervention at k=1:  E[Y] = 0.9979
+  Optimal intervention at k=2:  E[Y] = 0.9997
+  Optimal intervention at k=3:  E[Y] = 0.9999
+  Optimal intervention at k=4:  E[Y] = 0.9915
+  Optimal intervention at k=5:  E[Y] = 0.9575
 
 
 ================================================================================
