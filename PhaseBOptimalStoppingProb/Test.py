@@ -485,10 +485,7 @@ class CausalOptimalStopping:
         return filename, slice_filename
     
     def plot_intervention_boundaries_3d_with_slices(self, filename='intervention_boundaries_3d_contour.png'):
-        """
-        Create 3D plot with 2D contour slices at each time point
-        Similar to the example image - shows (X, U) slices at each t
-        """
+        
         fig = plt.figure(figsize=(16, 12))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -514,55 +511,36 @@ class CausalOptimalStopping:
                     elif policy == 'no_action':
                         policy_values[i, j] = 0
             
-            # Plot the contour slice at position t - CONTINUOUS VERSION
-            from matplotlib.tri import Triangulation
+            # Plot the contour slice at position t - DISCRETE SQUARES VERSION
             from mpl_toolkits.mplot3d.art3d import Poly3DCollection
             
-            for policy_type in [0, 1, 2]:  # DEATH, WAIT, INTERVENE
-                # Collect all points for this policy type
-                x_points = []
-                z_points = []
-                
-                for i in range(len(U_grid)):
-                    for j in range(len(X_grid)):
-                        if policy_values[i, j] == policy_type:
-                            x_points.append(X_grid[j])
-                            z_points.append(U_grid[i])
-                
-                if len(x_points) > 0:
-                    # Set color and alpha based on policy type
-                    if policy_type == 2:  # INTERVENE
+            for i in range(len(U_grid)):
+                for j in range(len(X_grid)):
+                    val = policy_values[i, j]
+                    if val == 2:  # INTERVENE
                         color = 'red'
                         alpha = 0.7
-                    elif policy_type == 1:  # WAIT
+                    elif val == 1:  # WAIT
                         color = 'blue'
-                        alpha = 0.4
+                        alpha = 0.3
                     else:  # DEATH
                         color = 'black'
                         alpha = 0.8
                     
-                    # Create filled regions
-                    if len(x_points) >= 3:
-                        y_points = [t] * len(x_points)
-                        
-                        # Create triangulation and plot surface
-                        tri = Triangulation(x_points, z_points)
-                        
-                        # For each triangle, create a 3D polygon
-                        for triangle in tri.triangles:
-                            verts = []
-                            for idx in triangle:
-                                verts.append([y_points[idx], x_points[idx], z_points[idx]])
-                            
-                            poly = Poly3DCollection([verts], alpha=alpha, facecolor=color, 
-                                                   edgecolor=color, linewidth=0.5)
-                            ax.add_collection3d(poly)
+                    # Draw a small square at this position
+                    x = [X_grid[j] - 0.4, X_grid[j] + 0.4, X_grid[j] + 0.4, X_grid[j] - 0.4]
+                    y = [t, t, t, t]
+                    z = [U_grid[i] - 0.4, U_grid[i] - 0.4, U_grid[i] + 0.4, U_grid[i] + 0.4]
+                    
+                    verts = [list(zip(y, x, z))]
+                    poly = Poly3DCollection(verts, alpha=alpha, facecolor=color, edgecolor='none')
+                    ax.add_collection3d(poly)
             
             # Draw outline of slice
             outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
             outline_t = [t, t, t, t, t]
             outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
-                         max(self.U_values), min(self.U_values)]
+                        max(self.U_values), min(self.U_values)]
             ax.plot(outline_t, outline_x, outline_u, 'k-', linewidth=1.5, alpha=0.5)
         
         # Labels and formatting
@@ -581,7 +559,7 @@ class CausalOptimalStopping:
         from matplotlib.patches import Patch
         legend_elements = [
             Patch(facecolor='red', alpha=0.7, label='INTERVENE'),
-            Patch(facecolor='blue', alpha=0.4, label='WAIT'),
+            Patch(facecolor='blue', alpha=0.3, label='WAIT'),
             Patch(facecolor='black', alpha=0.8, label='DEATH')
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize=12)
@@ -648,7 +626,7 @@ class CausalOptimalStopping:
                 
                 if mask.any():
                     # Create a surface with the policy values
-                    Z_plot = U_mesh.copy()
+                    Z_plot = U_mesh.copy().astype(float)
                     Z_plot[~mask] = np.nan  # Hide non-matching cells
                     
                     # Add surface for this policy type at this time
