@@ -361,10 +361,13 @@ class CausalOptimalStopping:
     def plot_intervention_boundaries_3d(self, filename='intervention_boundaries_3d.png'):
         """
         Create 3D scatter plot of intervention boundaries in (t, X, U) space
+        PLUS 2D slices showing cross-sections
         
         Shows which states lead to INTERVENE vs WAIT vs DEATH decisions
-        (Original version with dots and X's)
         """
+        # ========================================================================
+        # ORIGINAL 3D PLOT
+        # ========================================================================
         fig = plt.figure(figsize=(14, 10))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -395,15 +398,15 @@ class CausalOptimalStopping:
         # Plot each category
         if len(intervene_points['t']) > 0:
             ax.scatter(intervene_points['t'], intervene_points['X'], intervene_points['U'],
-                      c='red', marker='o', s=50, alpha=0.6, label='INTERVENE')
+                    c='red', marker='o', s=50, alpha=0.6, label='INTERVENE')
         
         if len(wait_points['t']) > 0:
             ax.scatter(wait_points['t'], wait_points['X'], wait_points['U'],
-                      c='blue', marker='o', s=30, alpha=0.3, label='WAIT')
+                    c='blue', marker='o', s=30, alpha=0.3, label='WAIT')
         
         if len(death_points['t']) > 0:
             ax.scatter(death_points['t'], death_points['X'], death_points['U'],
-                      c='black', marker='x', s=40, alpha=0.8, label='DEATH')
+                    c='black', marker='x', s=40, alpha=0.8, label='DEATH')
         
         # Labels and title
         ax.set_xlabel('Time (t)', fontsize=14, labelpad=10)
@@ -415,11 +418,153 @@ class CausalOptimalStopping:
         ax.set_xlim(0.5, self.T - 0.5)
         ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
         ax.set_zlim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
-        # Set custom ticks for X-axis (increment by 2)
-        ax.set_yticks(range(0, self.X_max + 1, 2))  # Y-axis is Health State (X): 0, 2, 4, 6, ..., 20
+        ax.set_yticks(range(0, self.X_max + 1, 2))
         
         # Legend
         ax.legend(loc='upper left', fontsize=12)
+        
+        # Grid
+        ax.grid(True, alpha=0.3)
+        
+        # Save 3D plot
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # ========================================================================
+        # NEW: 2D SLICES
+        # ========================================================================
+        
+        # Create figure with subplots for each time slice
+        n_times = self.T - 1  # Number of decision times
+        fig, axes = plt.subplots(1, n_times, figsize=(5*n_times, 5))
+        
+        # Handle case where T=2 (only one subplot)
+        if n_times == 1:
+            axes = [axes]
+        
+        for idx, t in enumerate(range(1, self.T)):
+            ax = axes[idx]
+            
+            # Collect data for this time slice
+            for X in range(self.X_min, self.X_max + 1):
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    
+                    if policy == 'INTERVENE':
+                        ax.scatter(X, U, c='red', marker='o', s=100, alpha=0.7)
+                    elif policy == 'WAIT':
+                        ax.scatter(X, U, c='blue', marker='o', s=60, alpha=0.4)
+                    elif policy == 'no_action':
+                        ax.scatter(X, U, c='black', marker='x', s=80, alpha=0.9)
+            
+            # Format subplot
+            ax.set_xlabel('Health State (X)', fontsize=12)
+            ax.set_ylabel('Shock (U)', fontsize=12)
+            ax.set_title(f't = {t}', fontsize=14, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.set_xlim(self.X_min - 0.5, self.X_max + 0.5)
+            ax.set_ylim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
+        
+        # Add legend to the figure
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='red', alpha=0.7, label='INTERVENE'),
+            Patch(facecolor='blue', alpha=0.4, label='WAIT'),
+            Patch(facecolor='black', alpha=0.9, label='DEATH')
+        ]
+        fig.legend(handles=legend_elements, loc='upper center', 
+                bbox_to_anchor=(0.5, 0.02), ncol=3, fontsize=12)
+        
+        plt.tight_layout()
+        slice_filename = filename.replace('.png', '_slices.png')
+        plt.savefig(slice_filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        return filename, slice_filename
+    
+    def plot_intervention_boundaries_3d_with_slices(self, filename='intervention_boundaries_3d_contour.png'):
+    
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # For each time slice, create a contour/filled plot
+        for t in range(1, self.T):
+            # Create grid for this time slice
+            X_grid = np.arange(self.X_min, self.X_max + 1)
+            U_grid = np.array(self.U_values)
+            
+            # Create meshgrid
+            X_mesh, U_mesh = np.meshgrid(X_grid, U_grid)
+            
+            # Create policy values: 2=INTERVENE, 1=WAIT, 0=DEATH
+            policy_values = np.zeros_like(X_mesh, dtype=float)
+            
+            for i, U in enumerate(U_grid):
+                for j, X in enumerate(X_grid):
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    if policy == 'INTERVENE':
+                        policy_values[i, j] = 2
+                    elif policy == 'WAIT':
+                        policy_values[i, j] = 1
+                    elif policy == 'no_action':
+                        policy_values[i, j] = 0
+            
+            # Create contour plot at this time slice
+            # Use contourf for filled contours
+            colors = ['black', 'lightblue', 'red']
+            levels = [0, 0.5, 1.5, 2.5]
+            
+            # Plot the contour slice at position t
+            for i in range(len(U_grid)):
+                for j in range(len(X_grid)):
+                    val = policy_values[i, j]
+                    if val == 2:  # INTERVENE
+                        color = 'red'
+                        alpha = 0.7
+                    elif val == 1:  # WAIT
+                        color = 'blue'
+                        alpha = 0.3
+                    else:  # DEATH
+                        color = 'black'
+                        alpha = 0.8
+                    
+                    # Draw a small square at this position
+                    x = [X_grid[j] - 0.4, X_grid[j] + 0.4, X_grid[j] + 0.4, X_grid[j] - 0.4]
+                    y = [t, t, t, t]
+                    z = [U_grid[i] - 0.4, U_grid[i] - 0.4, U_grid[i] + 0.4, U_grid[i] + 0.4]
+                    
+                    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+                    verts = [list(zip(y, x, z))]
+                    poly = Poly3DCollection(verts, alpha=alpha, facecolor=color, edgecolor='none')
+                    ax.add_collection3d(poly)
+            
+            # Draw outline of slice
+            outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
+            outline_t = [t, t, t, t, t]
+            outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
+                        max(self.U_values), min(self.U_values)]
+            ax.plot(outline_t, outline_x, outline_u, 'k-', linewidth=1.5, alpha=0.5)
+        
+        # Labels and formatting
+        ax.set_xlabel('Time (t)', fontsize=14, labelpad=10)
+        ax.set_ylabel('Health State (X)', fontsize=14, labelpad=10)
+        ax.set_zlabel('Shock (U)', fontsize=14, labelpad=10)
+        ax.set_title('Intervention Policy Slices in (t, X, U) Space', fontsize=16, pad=20)
+        
+        # Set limits
+        ax.set_xlim(0.5, self.T - 0.5)
+        ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
+        ax.set_zlim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
+        
+        # Custom legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='red', alpha=0.7, label='INTERVENE'),
+            Patch(facecolor='blue', alpha=0.3, label='WAIT'),
+            Patch(facecolor='black', alpha=0.8, label='DEATH')
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=12)
         
         # Grid
         ax.grid(True, alpha=0.3)
@@ -459,8 +604,9 @@ class CausalOptimalStopping:
             alg3_results[k] = E_Y
             alg3_targets[k] = targets
         
-        # Generate visualization
-        viz_filename = self.plot_intervention_boundaries_3d()
+       
+        viz_filename, slice_filename = self.plot_intervention_boundaries_3d()
+        contour_filename = self.plot_intervention_boundaries_3d_with_slices()
         
         # Open file for output
         with open(output_file, 'w') as f:
@@ -549,13 +695,12 @@ class CausalOptimalStopping:
             f.write("3D VISUALIZATION\n")
             f.write(f"{'='*80}\n\n")
             
-            f.write(f"3D visualization of intervention boundaries saved to: {viz_filename}\n")
-            
+            f.write(f"3D visualization saved to: {viz_filename}\n")
+            f.write(f"2D time slices saved to: {slice_filename}\n")
+            f.write(f"3D contour slices saved to: {contour_filename}\n")
             f.write(f"\n{'='*80}\n")
         
         print(f"Results saved to {output_file}")
-        print(f"3D visualization saved to {viz_filename}")
-
 
 # Run algorithms
 if __name__ == "__main__":

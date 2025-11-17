@@ -2018,6 +2018,8 @@ COMPARISON:
 3D VISUALIZATION
 ================================================================================
 
-3D visualization of intervention boundaries saved to: intervention_boundaries_3d.png
+3D visualization saved to: intervention_boundaries_3d.png
+2D time slices saved to: intervention_boundaries_3d_slices.png
+3D contour slices saved to: intervention_boundaries_3d_contour.png
 
 ================================================================================
