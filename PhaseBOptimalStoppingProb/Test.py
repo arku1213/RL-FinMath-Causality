@@ -473,10 +473,11 @@ class CausalOptimalStopping:
             Patch(facecolor='blue', alpha=0.4, label='WAIT'),
             Patch(facecolor='black', alpha=0.9, label='DEATH')
         ]
-        fig.legend(handles=legend_elements, loc='upper center', 
-                bbox_to_anchor=(0.5, 0.02), ncol=3, fontsize=12)
         
-        plt.tight_layout()
+        plt.tight_layout(rect=[0, 0.05, 1, 1])
+        fig.legend(handles=legend_elements, loc='lower center', 
+                   bbox_to_anchor=(0.5, -0.02), ncol=3, fontsize=12)
+        
         slice_filename = filename.replace('.png', '_slices.png')
         plt.savefig(slice_filename, dpi=300, bbox_inches='tight')
         plt.close()
@@ -484,7 +485,10 @@ class CausalOptimalStopping:
         return filename, slice_filename
     
     def plot_intervention_boundaries_3d_with_slices(self, filename='intervention_boundaries_3d_contour.png'):
-    
+        """
+        Create 3D plot with 2D contour slices at each time point
+        Similar to the example image - shows (X, U) slices at each t
+        """
         fig = plt.figure(figsize=(16, 12))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -510,40 +514,55 @@ class CausalOptimalStopping:
                     elif policy == 'no_action':
                         policy_values[i, j] = 0
             
-            # Create contour plot at this time slice
-            # Use contourf for filled contours
-            colors = ['black', 'lightblue', 'red']
-            levels = [0, 0.5, 1.5, 2.5]
+            # Plot the contour slice at position t - CONTINUOUS VERSION
+            from matplotlib.tri import Triangulation
+            from mpl_toolkits.mplot3d.art3d import Poly3DCollection
             
-            # Plot the contour slice at position t
-            for i in range(len(U_grid)):
-                for j in range(len(X_grid)):
-                    val = policy_values[i, j]
-                    if val == 2:  # INTERVENE
+            for policy_type in [0, 1, 2]:  # DEATH, WAIT, INTERVENE
+                # Collect all points for this policy type
+                x_points = []
+                z_points = []
+                
+                for i in range(len(U_grid)):
+                    for j in range(len(X_grid)):
+                        if policy_values[i, j] == policy_type:
+                            x_points.append(X_grid[j])
+                            z_points.append(U_grid[i])
+                
+                if len(x_points) > 0:
+                    # Set color and alpha based on policy type
+                    if policy_type == 2:  # INTERVENE
                         color = 'red'
                         alpha = 0.7
-                    elif val == 1:  # WAIT
+                    elif policy_type == 1:  # WAIT
                         color = 'blue'
-                        alpha = 0.3
+                        alpha = 0.4
                     else:  # DEATH
                         color = 'black'
                         alpha = 0.8
                     
-                    # Draw a small square at this position
-                    x = [X_grid[j] - 0.4, X_grid[j] + 0.4, X_grid[j] + 0.4, X_grid[j] - 0.4]
-                    y = [t, t, t, t]
-                    z = [U_grid[i] - 0.4, U_grid[i] - 0.4, U_grid[i] + 0.4, U_grid[i] + 0.4]
-                    
-                    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-                    verts = [list(zip(y, x, z))]
-                    poly = Poly3DCollection(verts, alpha=alpha, facecolor=color, edgecolor='none')
-                    ax.add_collection3d(poly)
+                    # Create filled regions
+                    if len(x_points) >= 3:
+                        y_points = [t] * len(x_points)
+                        
+                        # Create triangulation and plot surface
+                        tri = Triangulation(x_points, z_points)
+                        
+                        # For each triangle, create a 3D polygon
+                        for triangle in tri.triangles:
+                            verts = []
+                            for idx in triangle:
+                                verts.append([y_points[idx], x_points[idx], z_points[idx]])
+                            
+                            poly = Poly3DCollection([verts], alpha=alpha, facecolor=color, 
+                                                   edgecolor=color, linewidth=0.5)
+                            ax.add_collection3d(poly)
             
             # Draw outline of slice
             outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
             outline_t = [t, t, t, t, t]
             outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
-                        max(self.U_values), min(self.U_values)]
+                         max(self.U_values), min(self.U_values)]
             ax.plot(outline_t, outline_x, outline_u, 'k-', linewidth=1.5, alpha=0.5)
         
         # Labels and formatting
@@ -556,15 +575,19 @@ class CausalOptimalStopping:
         ax.set_xlim(0.5, self.T - 0.5)
         ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
         ax.set_zlim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
+        ax.set_yticks(range(2, self.X_max + 1, 2))
         
         # Custom legend
         from matplotlib.patches import Patch
         legend_elements = [
             Patch(facecolor='red', alpha=0.7, label='INTERVENE'),
-            Patch(facecolor='blue', alpha=0.3, label='WAIT'),
+            Patch(facecolor='blue', alpha=0.4, label='WAIT'),
             Patch(facecolor='black', alpha=0.8, label='DEATH')
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize=12)
+        
+        # Set initial viewing angle
+        ax.view_init(elev=20, azim=45)
         
         # Grid
         ax.grid(True, alpha=0.3)
@@ -573,6 +596,125 @@ class CausalOptimalStopping:
         plt.tight_layout()
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
+        
+        return filename
+    
+    def plot_intervention_boundaries_plotly(self, filename='intervention_boundaries_3d_interactive.html'):
+        """
+        Create interactive 3D plot using Plotly with continuous surfaces at each time slice
+        
+        Creates an HTML file that can be opened in any browser with full 3D rotation
+        """
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except ImportError:
+            print("Plotly not installed. Install with: pip install plotly")
+            return None
+        
+        fig = go.Figure()
+        
+        # For each time slice, create surfaces for each policy type
+        for t in range(1, self.T):
+            # Create grid for this time slice
+            X_grid = np.arange(self.X_min, self.X_max + 1)
+            U_grid = np.array(self.U_values)
+            
+            # Create policy matrix
+            policy_matrix = np.zeros((len(U_grid), len(X_grid)))
+            
+            for i, U in enumerate(U_grid):
+                for j, X in enumerate(X_grid):
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    if policy == 'INTERVENE':
+                        policy_matrix[i, j] = 2
+                    elif policy == 'WAIT':
+                        policy_matrix[i, j] = 1
+                    elif policy == 'no_action':
+                        policy_matrix[i, j] = 0
+            
+            # Create meshgrid for this time slice
+            X_mesh, U_mesh = np.meshgrid(X_grid, U_grid)
+            T_mesh = np.full_like(X_mesh, t, dtype=float)
+            
+            # Create surface for each policy type
+            for policy_type, (name, color, opacity) in [
+                (2, ('INTERVENE', 'red', 0.7)),
+                (1, ('WAIT', 'blue', 0.4)),
+                (0, ('DEATH', 'black', 0.8))
+            ]:
+                # Create a mask for this policy type
+                mask = (policy_matrix == policy_type)
+                
+                if mask.any():
+                    # Create a surface with the policy values
+                    Z_plot = U_mesh.copy()
+                    Z_plot[~mask] = np.nan  # Hide non-matching cells
+                    
+                    # Add surface for this policy type at this time
+                    fig.add_trace(go.Surface(
+                        x=T_mesh,
+                        y=X_mesh,
+                        z=Z_plot,
+                        colorscale=[[0, color], [1, color]],
+                        showscale=False,
+                        opacity=opacity,
+                        name=f'{name} (t={t})',
+                        legendgroup=name,
+                        showlegend=(t == 1),  # Only show legend for first occurrence
+                        hovertemplate=f'<b>{name}</b><br>Time: %{{x}}<br>Health: %{{y}}<br>Shock: %{{z}}<extra></extra>'
+                    ))
+            
+            # Add outline frame for this time slice
+            outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
+            outline_t = [t, t, t, t, t]
+            outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
+                         max(self.U_values), min(self.U_values)]
+            
+            fig.add_trace(go.Scatter3d(
+                x=outline_t,
+                y=outline_x,
+                z=outline_u,
+                mode='lines',
+                line=dict(color='black', width=3),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+        
+        # Update layout
+        fig.update_layout(
+            title={
+                'text': 'Interactive Intervention Policy Slices in (t, X, U) Space',
+                'x': 0.5,
+                'xanchor': 'center',
+                'font': {'size': 18}
+            },
+            scene=dict(
+                xaxis_title='Time (t)',
+                yaxis_title='Health State (X)',
+                zaxis_title='Shock (U)',
+                xaxis=dict(range=[0.5, self.T - 0.5]),
+                yaxis=dict(range=[self.X_min - 0.5, self.X_max + 0.5]),
+                zaxis=dict(range=[min(self.U_values) - 0.5, max(self.U_values) + 0.5]),
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.3)
+                )
+            ),
+            width=1200,
+            height=900,
+            legend=dict(
+                x=0.02,
+                y=0.98,
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='black',
+                borderwidth=1
+            )
+        )
+        
+        # Save as HTML
+        fig.write_html(filename)
+        print(f"Interactive Plotly visualization saved to {filename}")
+        print("Open this file in your web browser to interact with the 3D plot!")
         
         return filename
     
@@ -604,9 +746,10 @@ class CausalOptimalStopping:
             alg3_results[k] = E_Y
             alg3_targets[k] = targets
         
-       
+        # Generate visualizations
         viz_filename, slice_filename = self.plot_intervention_boundaries_3d()
         contour_filename = self.plot_intervention_boundaries_3d_with_slices()
+        plotly_filename = self.plot_intervention_boundaries_plotly()
         
         # Open file for output
         with open(output_file, 'w') as f:
@@ -692,15 +835,26 @@ class CausalOptimalStopping:
             # 3D VISUALIZATION
             # ================================================================
             f.write(f"\n\n{'='*80}\n")
-            f.write("3D VISUALIZATION\n")
+            f.write("VISUALIZATIONS\n")
             f.write(f"{'='*80}\n\n")
             
-            f.write(f"3D visualization saved to: {viz_filename}\n")
+            f.write(f"3D scatter plot saved to: {viz_filename}\n")
             f.write(f"2D time slices saved to: {slice_filename}\n")
             f.write(f"3D contour slices saved to: {contour_filename}\n")
+            if plotly_filename:
+                f.write(f"Interactive 3D plot (Plotly) saved to: {plotly_filename}\n")
+                f.write(f"  -> Open {plotly_filename} in your web browser for full 3D interaction!\n")
+            
             f.write(f"\n{'='*80}\n")
         
+        # Console output
         print(f"Results saved to {output_file}")
+        print(f"3D visualization saved to {viz_filename}")
+        print(f"2D time slices saved to {slice_filename}")
+        print(f"3D contour slices saved to {contour_filename}")
+        if plotly_filename:
+            print(f"Interactive Plotly visualization saved to {plotly_filename}")
+
 
 # Run algorithms
 if __name__ == "__main__":
