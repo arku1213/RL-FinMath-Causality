@@ -621,18 +621,19 @@ class CausalOptimalStopping:
             # Create custom data for hover text
             # Create custom data for hover text - must match mesh shape exactly
             # Create text labels for each grid point
-            hover_text = []
-            for i, U in enumerate(U_grid):
+            policy_text = []
+            for i in range(len(U_grid)):
                 row = []
-                for j, X in enumerate(X_grid):
+                for j in range(len(X_grid)):
                     if policy_matrix[i, j] == 0:
-                        policy_name = 'DEATH'
+                        row.append('DEATH')
                     elif policy_matrix[i, j] == 1:
-                        policy_name = 'WAIT'
+                        row.append('WAIT')
                     else:
-                        policy_name = 'INTERVENE'
-                    row.append(f'Policy: {policy_name}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
-                hover_text.append(row)
+                        row.append('INTERVENE')
+                policy_text.append(row)
+
+            policy_text = np.array(policy_text)
 
             # Add ONE surface for this time slice with all policies
             fig.add_trace(go.Surface(
@@ -640,7 +641,7 @@ class CausalOptimalStopping:
                 y=X_mesh,
                 z=U_mesh,
                 surfacecolor=policy_normalized,
-                text=hover_text,
+                customdata=policy_text,
                 colorscale=colorscale,
                 showscale=(t == 1),  # Only show colorbar for first slice
                 cmin=0,
@@ -648,7 +649,7 @@ class CausalOptimalStopping:
                 opacity=0.9,
                 name=f't={t}',
                 showlegend=False,
-                hoverinfo='text',
+                hovertemplate='<b>Policy: %{customdata}</b><br>Time: %{x:.0f}<br>Health: %{y:.0f}<br>Shock: %{z:.0f}<extra></extra>',
                 colorbar=dict(
                     title="Policy",
                     tickvals=[0, 0.5, 1],
@@ -656,6 +657,22 @@ class CausalOptimalStopping:
                     len=0.5,
                     x=1.02
                 ) if t == 1 else None
+            ))
+            
+            # Add outline frame for this time slice
+            outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
+            outline_t = [t, t, t, t, t]
+            outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
+                        max(self.U_values), min(self.U_values)]
+            
+            fig.add_trace(go.Scatter3d(
+                x=outline_t,
+                y=outline_x,
+                z=outline_u,
+                mode='lines',
+                line=dict(color='white', width=3),
+                showlegend=False,
+                hoverinfo='skip'
             ))
             
             # Add outline frame for this time slice
