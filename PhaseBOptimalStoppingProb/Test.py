@@ -586,60 +586,63 @@ class CausalOptimalStopping:
         
         fig = go.Figure()
         
-        # Collect all points by policy type
-        policy_data = {
-            'INTERVENE': {'t': [], 'X': [], 'U': []},
-            'WAIT': {'t': [], 'X': [], 'U': []},
-            'DEATH': {'t': [], 'X': [], 'U': []}
-        }
+        # Create a custom colorscale: 0=DEATH (black), 1=WAIT (blue), 2=INTERVENE (red)
+        colorscale = [
+            [0.0, 'black'],
+            [0.5, 'blue'],
+            [1.0, 'red']
+        ]
         
-        # Loop through all states and collect points
+        # For each time slice, create ONE surface showing all policy types
         for t in range(1, self.T):
-            for X in range(self.X_min, self.X_max + 1):
-                for U in self.U_values:
-                    policy = self.policy.get((t, X, U, 0), '?')
-                    
-                    if policy == 'INTERVENE':
-                        policy_data['INTERVENE']['t'].append(t)
-                        policy_data['INTERVENE']['X'].append(X)
-                        policy_data['INTERVENE']['U'].append(U)
-                    elif policy == 'WAIT':
-                        policy_data['WAIT']['t'].append(t)
-                        policy_data['WAIT']['X'].append(X)
-                        policy_data['WAIT']['U'].append(U)
-                    elif policy == 'no_action':
-                        policy_data['DEATH']['t'].append(t)
-                        policy_data['DEATH']['X'].append(X)
-                        policy_data['DEATH']['U'].append(U)
-        
-        # Add traces for each policy type
-        colors = {'INTERVENE': 'red', 'WAIT': 'blue', 'DEATH': 'black'}
-        sizes = {'INTERVENE': 8, 'WAIT': 6, 'DEATH': 8}
-        symbols = {'INTERVENE': 'circle', 'WAIT': 'circle', 'DEATH': 'x'}
-        opacities = {'INTERVENE': 0.8, 'WAIT': 0.5, 'DEATH': 0.9}
-        
-        for policy_name in ['INTERVENE', 'WAIT', 'DEATH']:
-            data = policy_data[policy_name]
+            # Create grid for this time slice
+            X_grid = np.arange(self.X_min, self.X_max + 1)
+            U_grid = np.array(self.U_values)
             
-            if len(data['t']) > 0:
-                fig.add_trace(go.Scatter3d(
-                    x=data['t'],
-                    y=data['X'],
-                    z=data['U'],
-                    mode='markers',
-                    marker=dict(
-                        size=sizes[policy_name],
-                        color=colors[policy_name],
-                        symbol=symbols[policy_name],
-                        opacity=opacities[policy_name],
-                        line=dict(width=0)
-                    ),
-                    name=policy_name,
-                    hovertemplate=f'<b>{policy_name}</b><br>Time: %{{x}}<br>Health: %{{y}}<br>Shock: %{{z}}<extra></extra>'
-                ))
-        
-        # Add frames for each time slice
-        for t in range(1, self.T):
+            # Create policy matrix: 0=DEATH, 1=WAIT, 2=INTERVENE
+            policy_matrix = np.zeros((len(U_grid), len(X_grid)))
+            
+            for i, U in enumerate(U_grid):
+                for j, X in enumerate(X_grid):
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    if policy == 'INTERVENE':
+                        policy_matrix[i, j] = 2
+                    elif policy == 'WAIT':
+                        policy_matrix[i, j] = 1
+                    elif policy == 'no_action':
+                        policy_matrix[i, j] = 0
+            
+            # Create meshgrid for this time slice
+            X_mesh, U_mesh = np.meshgrid(X_grid, U_grid)
+            T_mesh = np.full_like(X_mesh, t, dtype=float)
+            
+            # Normalize policy values to [0, 1] for colorscale
+            policy_normalized = policy_matrix / 2.0
+            
+            # Add ONE surface for this time slice with all policies
+            fig.add_trace(go.Surface(
+                x=T_mesh,
+                y=X_mesh,
+                z=U_mesh,
+                surfacecolor=policy_normalized,
+                colorscale=colorscale,
+                showscale=(t == 1),  # Only show colorbar for first slice
+                cmin=0,
+                cmax=1,
+                opacity=0.9,
+                name=f't={t}',
+                showlegend=False,
+                hovertemplate='Time: %{x}<br>Health: %{y}<br>Shock: %{z}<extra></extra>',
+                colorbar=dict(
+                    title="Policy",
+                    tickvals=[0, 0.5, 1],
+                    ticktext=["DEATH", "WAIT", "INTERVENE"],
+                    len=0.5,
+                    x=1.02
+                ) if t == 1 else None
+            ))
+            
+            # Add outline frame for this time slice
             outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
             outline_t = [t, t, t, t, t]
             outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
@@ -650,10 +653,33 @@ class CausalOptimalStopping:
                 y=outline_x,
                 z=outline_u,
                 mode='lines',
-                line=dict(color='gray', width=2),
+                line=dict(color='white', width=3),
                 showlegend=False,
                 hoverinfo='skip'
             ))
+        
+        # Add custom legend manually
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode='markers',
+            marker=dict(size=10, color='red'),
+            name='INTERVENE',
+            showlegend=True
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode='markers',
+            marker=dict(size=10, color='blue'),
+            name='WAIT',
+            showlegend=True
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode='markers',
+            marker=dict(size=10, color='black'),
+            name='DEATH',
+            showlegend=True
+        ))
         
         # Update layout
         fig.update_layout(
