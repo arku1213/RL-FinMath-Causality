@@ -578,83 +578,79 @@ class CausalOptimalStopping:
         return filename
     
     def plot_intervention_boundaries_plotly(self, filename='intervention_boundaries_3d_interactive.html'):
-        """
-        Create interactive 3D plot using Plotly with continuous surfaces at each time slice
-        
-        Creates an HTML file that can be opened in any browser with full 3D rotation
-        """
         try:
             import plotly.graph_objects as go
-            from plotly.subplots import make_subplots
         except ImportError:
             print("Plotly not installed. Install with: pip install plotly")
             return None
         
         fig = go.Figure()
         
-        # For each time slice, create surfaces for each policy type
+        # Collect all points by policy type
+        policy_data = {
+            'INTERVENE': {'t': [], 'X': [], 'U': []},
+            'WAIT': {'t': [], 'X': [], 'U': []},
+            'DEATH': {'t': [], 'X': [], 'U': []}
+        }
+        
+        # Loop through all states and collect points
         for t in range(1, self.T):
-            # Create grid for this time slice
-            X_grid = np.arange(self.X_min, self.X_max + 1)
-            U_grid = np.array(self.U_values)
-            
-            # Create policy matrix
-            policy_matrix = np.zeros((len(U_grid), len(X_grid)))
-            
-            for i, U in enumerate(U_grid):
-                for j, X in enumerate(X_grid):
+            for X in range(self.X_min, self.X_max + 1):
+                for U in self.U_values:
                     policy = self.policy.get((t, X, U, 0), '?')
-                    if policy == 'INTERVENE':
-                        policy_matrix[i, j] = 2
-                    elif policy == 'WAIT':
-                        policy_matrix[i, j] = 1
-                    elif policy == 'no_action':
-                        policy_matrix[i, j] = 0
-            
-            # Create meshgrid for this time slice
-            X_mesh, U_mesh = np.meshgrid(X_grid, U_grid)
-            T_mesh = np.full_like(X_mesh, t, dtype=float)
-            
-            # Create surface for each policy type
-            for policy_type, (name, color, opacity) in [
-                (2, ('INTERVENE', 'red', 0.7)),
-                (1, ('WAIT', 'blue', 0.4)),
-                (0, ('DEATH', 'black', 0.8))
-            ]:
-                # Create a mask for this policy type
-                mask = (policy_matrix == policy_type)
-                
-                if mask.any():
-                    # Create a surface with the policy values
-                    Z_plot = U_mesh.copy().astype(float)
-                    Z_plot[~mask] = np.nan  # Hide non-matching cells
                     
-                    # Add surface for this policy type at this time
-                    fig.add_trace(go.Surface(
-                        x=T_mesh,
-                        y=X_mesh,
-                        z=Z_plot,
-                        colorscale=[[0, color], [1, color]],
-                        showscale=False,
-                        opacity=opacity,
-                        name=name,
-                        legendgroup=name,
-                        showlegend=(t == 1),
-                        hovertemplate=f'<b>{name}</b><br>Time: %{{x}}<br>Health: %{{y}}<br>Shock: %{{z}}<extra></extra>'
-                    ))
+                    if policy == 'INTERVENE':
+                        policy_data['INTERVENE']['t'].append(t)
+                        policy_data['INTERVENE']['X'].append(X)
+                        policy_data['INTERVENE']['U'].append(U)
+                    elif policy == 'WAIT':
+                        policy_data['WAIT']['t'].append(t)
+                        policy_data['WAIT']['X'].append(X)
+                        policy_data['WAIT']['U'].append(U)
+                    elif policy == 'no_action':
+                        policy_data['DEATH']['t'].append(t)
+                        policy_data['DEATH']['X'].append(X)
+                        policy_data['DEATH']['U'].append(U)
+        
+        # Add traces for each policy type
+        colors = {'INTERVENE': 'red', 'WAIT': 'blue', 'DEATH': 'black'}
+        sizes = {'INTERVENE': 8, 'WAIT': 6, 'DEATH': 8}
+        symbols = {'INTERVENE': 'circle', 'WAIT': 'circle', 'DEATH': 'x'}
+        opacities = {'INTERVENE': 0.8, 'WAIT': 0.5, 'DEATH': 0.9}
+        
+        for policy_name in ['INTERVENE', 'WAIT', 'DEATH']:
+            data = policy_data[policy_name]
             
-            # Add outline frame for this time slice
+            if len(data['t']) > 0:
+                fig.add_trace(go.Scatter3d(
+                    x=data['t'],
+                    y=data['X'],
+                    z=data['U'],
+                    mode='markers',
+                    marker=dict(
+                        size=sizes[policy_name],
+                        color=colors[policy_name],
+                        symbol=symbols[policy_name],
+                        opacity=opacities[policy_name],
+                        line=dict(width=0)
+                    ),
+                    name=policy_name,
+                    hovertemplate=f'<b>{policy_name}</b><br>Time: %{{x}}<br>Health: %{{y}}<br>Shock: %{{z}}<extra></extra>'
+                ))
+        
+        # Add frames for each time slice
+        for t in range(1, self.T):
             outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
             outline_t = [t, t, t, t, t]
             outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
-                         max(self.U_values), min(self.U_values)]
+                        max(self.U_values), min(self.U_values)]
             
             fig.add_trace(go.Scatter3d(
                 x=outline_t,
                 y=outline_x,
                 z=outline_u,
                 mode='lines',
-                line=dict(color='black', width=3),
+                line=dict(color='gray', width=2),
                 showlegend=False,
                 hoverinfo='skip'
             ))
@@ -678,14 +674,15 @@ class CausalOptimalStopping:
                     eye=dict(x=1.5, y=1.5, z=1.3)
                 )
             ),
-            width=1200,
-            height=900,
+            width=1400,
+            height=1000,
             legend=dict(
                 x=0.02,
                 y=0.98,
-                bgcolor='rgba(255, 255, 255, 0.8)',
+                bgcolor='rgba(255, 255, 255, 0.9)',
                 bordercolor='black',
-                borderwidth=1
+                borderwidth=1,
+                font=dict(size=14)
             )
         )
         
