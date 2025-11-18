@@ -662,7 +662,7 @@ class CausalOptimalStopping:
         # Update layout
         fig.update_layout(
             title={
-                'text': 'Interactive Intervention Policy Slices in (t, X, U) Space',
+                'text': 'Interactive Intervention Policy Slices in (t, X, U, I) Space',
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': 18}
