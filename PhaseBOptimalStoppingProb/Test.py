@@ -639,6 +639,7 @@ class CausalOptimalStopping:
                         opacity=opacity,
                         name=name,
                         legendgroup=name,
+                        showlegend=(t == 1),
                         hovertemplate=f'<b>{name}</b><br>Time: %{{x}}<br>Health: %{{y}}<br>Shock: %{{z}}<extra></extra>'
                     ))
             
