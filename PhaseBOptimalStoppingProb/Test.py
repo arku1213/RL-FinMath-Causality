@@ -618,13 +618,17 @@ class CausalOptimalStopping:
             
             # Normalize policy values to [0, 1] for colorscale
             policy_normalized = policy_matrix / 2.0
-            
+            # Create custom data for hover text
+            policy_text = np.array([['DEATH' if p == 0 else 'WAIT' if p == 1 else 'INTERVENE' 
+                                    for p in row] for row in policy_matrix])
+
             # Add ONE surface for this time slice with all policies
             fig.add_trace(go.Surface(
                 x=T_mesh,
                 y=X_mesh,
                 z=U_mesh,
                 surfacecolor=policy_normalized,
+                customdata=policy_text,
                 colorscale=colorscale,
                 showscale=(t == 1),  # Only show colorbar for first slice
                 cmin=0,
@@ -632,7 +636,7 @@ class CausalOptimalStopping:
                 opacity=0.9,
                 name=f't={t}',
                 showlegend=False,
-                hovertemplate='Time: %{x}<br>Health: %{y}<br>Shock: %{z}<extra></extra>',
+                hovertemplate='<b>Policy: %{customdata}</b><br>Time: %{x}<br>Health: %{y}<br>Shock: %{z}<extra></extra>',
                 colorbar=dict(
                     title="Policy",
                     tickvals=[0, 0.5, 1],
