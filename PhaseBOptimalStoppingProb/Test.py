@@ -485,7 +485,7 @@ class CausalOptimalStopping:
         return filename, slice_filename
     
     def plot_intervention_boundaries_3d_with_slices(self, filename='intervention_boundaries_3d_contour.png'):
-        
+
         fig = plt.figure(figsize=(16, 12))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -547,7 +547,7 @@ class CausalOptimalStopping:
         ax.set_xlabel('Time (t)', fontsize=14, labelpad=10)
         ax.set_ylabel('Health State (X)', fontsize=14, labelpad=10)
         ax.set_zlabel('Shock (U)', fontsize=14, labelpad=10)
-        ax.set_title('Intervention Policy Slices in (t, X, U) Space', fontsize=16, pad=20)
+        ax.set_title('Intervention Policy Slices in (t, X, U, I) Space', fontsize=16, pad=20)
         
         # Set limits
         ax.set_xlim(0.5, self.T - 0.5)
@@ -637,9 +637,8 @@ class CausalOptimalStopping:
                         colorscale=[[0, color], [1, color]],
                         showscale=False,
                         opacity=opacity,
-                        name=f'{name} (t={t})',
+                        name=name,
                         legendgroup=name,
-                        showlegend=(t == 1),  # Only show legend for first occurrence
                         hovertemplate=f'<b>{name}</b><br>Time: %{{x}}<br>Health: %{{y}}<br>Shock: %{{z}}<extra></extra>'
                     ))
             
