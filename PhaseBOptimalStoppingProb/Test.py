@@ -620,19 +620,19 @@ class CausalOptimalStopping:
             policy_normalized = policy_matrix / 2.0
             # Create custom data for hover text
             # Create custom data for hover text - must match mesh shape exactly
-            policy_text = []
-            for i in range(len(U_grid)):
+            # Create text labels for each grid point
+            hover_text = []
+            for i, U in enumerate(U_grid):
                 row = []
-                for j in range(len(X_grid)):
+                for j, X in enumerate(X_grid):
                     if policy_matrix[i, j] == 0:
-                        row.append('DEATH')
+                        policy_name = 'DEATH'
                     elif policy_matrix[i, j] == 1:
-                        row.append('WAIT')
+                        policy_name = 'WAIT'
                     else:
-                        row.append('INTERVENE')
-                policy_text.append(row)
-
-            policy_text = np.array(policy_text)
+                        policy_name = 'INTERVENE'
+                    row.append(f'Policy: {policy_name}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
+                hover_text.append(row)
 
             # Add ONE surface for this time slice with all policies
             fig.add_trace(go.Surface(
@@ -640,7 +640,7 @@ class CausalOptimalStopping:
                 y=X_mesh,
                 z=U_mesh,
                 surfacecolor=policy_normalized,
-                customdata=policy_text,
+                text=hover_text,
                 colorscale=colorscale,
                 showscale=(t == 1),  # Only show colorbar for first slice
                 cmin=0,
@@ -648,7 +648,7 @@ class CausalOptimalStopping:
                 opacity=0.9,
                 name=f't={t}',
                 showlegend=False,
-                hovertemplate='<b>Policy: %{customdata}</b><br>Time: %{x:.0f}<br>Health: %{y:.0f}<br>Shock: %{z:.0f}<extra></extra>',
+                hoverinfo='text',
                 colorbar=dict(
                     title="Policy",
                     tickvals=[0, 0.5, 1],
