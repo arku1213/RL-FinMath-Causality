@@ -55,7 +55,20 @@ class CausalOptimalStopping:
         self.optimal_intervention_target = {}  # Optimal X target for each state
         
     def _compute_U_probabilities(self):
-        probs = np.array([0.15, 0.20, 0.30, 0.20, 0.10, 0.03, 0.02])
+        """
+        Asymmetric distribution biased toward negative shocks
+        
+        U = -3:  5%
+        U = -2: 15%
+        U = -1: 30%  } 50% negative
+        U =  0: 20%
+        U =  1: 20%  } 30% positive
+        U =  2:  8%
+        U =  3:  2%
+        
+        Expected value ≈ -0.5 (negative bias)
+        """
+        probs = np.array([0.05, 0.15, 0.30, 0.20, 0.20, 0.08, 0.02])
         return probs / probs.sum()
     
     def transition(self, X, U_current, U_next, intervene=False):
@@ -823,10 +836,12 @@ class CausalOptimalStopping:
             # ================================================================
             # THRESHOLD POLICY
             # ================================================================
+            # ================================================================
             f.write(f"\n\n{'='*80}\n")
             f.write("THRESHOLD POLICY\n")
             f.write(f"{'='*80}\n\n")
-            
+
+            # By time and shock (with subscripts)
             for t in range(1, self.T):
                 f.write(f"\nAt time t={t}:\n")
                 for U in self.U_values:
@@ -835,7 +850,52 @@ class CausalOptimalStopping:
                         states_str = '{' + ', '.join(map(str, intervene_states)) + '}'
                     else:
                         states_str = '∅'
-                    f.write(f"  U={U:2d}: Intervene if X ∈ {states_str}\n")
+                    f.write(f"  U_{t}={U:2d}: Intervene if X_{t} ∈ {states_str}\n")
+
+            # NEW: Aggregate across all times - by X value
+            f.write(f"\n{'─'*80}\n")
+            f.write("AGGREGATE POLICY (across all times):\n")
+            f.write(f"{'─'*80}\n\n")
+
+            # Collect all (X, U) pairs that ever trigger intervention
+            intervene_conditions = {}  # {X: set of U values that trigger intervention}
+
+            for t in range(1, self.T):
+                for U in self.U_values:
+                    intervene_states = thresholds[(t, U)]
+                    for X in intervene_states:
+                        if X not in intervene_conditions:
+                            intervene_conditions[X] = set()
+                        intervene_conditions[X].add(U)
+
+            # Sort by X and format output
+            if intervene_conditions:
+                f.write("Intervene if:\n")
+                for X in sorted(intervene_conditions.keys()):
+                    U_set = sorted(intervene_conditions[X])
+                    
+                    # Check if all U values are included
+                    if len(U_set) == len(self.U_values):
+                        f.write(f"  X = {X} (for any U)\n")
+                    else:
+                        # Find the pattern (e.g., U <= threshold)
+                        U_min = min(U_set)
+                        U_max = max(U_set)
+                        
+                        # Check if it's a contiguous range
+                        if U_set == list(range(U_min, U_max + 1)):
+                            if U_min == min(self.U_values):
+                                f.write(f"  X = {X} and U ≤ {U_max}\n")
+                            elif U_max == max(self.U_values):
+                                f.write(f"  X = {X} and U ≥ {U_min}\n")
+                            else:
+                                f.write(f"  X = {X} and {U_min} ≤ U ≤ {U_max}\n")
+                        else:
+                            # Non-contiguous, list them
+                            U_str = '{' + ', '.join(map(str, U_set)) + '}'
+                            f.write(f"  X = {X} and U ∈ {U_str}\n")
+            else:
+                f.write("Never intervene (no states trigger intervention)\n")
             
             # ================================================================
             # OPTIMAL INTERVENTION AT FIXED TIME k
