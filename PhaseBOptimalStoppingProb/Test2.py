@@ -31,10 +31,7 @@ class CausalOptimalStopping:
         # Intervention parameters
         self.intervention_center = 10     # Only used as fallback
         
-        # Shock distribution (negative bias = health tends to worsen)
-        # U = -3:  5%,  U = -2: 15%,  U = -1: 30%
-        # U =  0: 20%,  U =  1: 20%,  U =  2:  8%,  U =  3:  2%
-        self.U_values = [-3, -2, -1, 0, 1, 2, 3]
+        self.U_values = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
         
         # ========================================================================
         # DERIVED ATTRIBUTES (computed from configuration above)
@@ -56,19 +53,21 @@ class CausalOptimalStopping:
         
     def _compute_U_probabilities(self):
         """
-        Asymmetric distribution biased toward negative shocks
+        Extremely asymmetric distribution heavily biased toward negative shocks
         
-        U = -3:  5%
-        U = -2: 15%
-        U = -1: 30%  } 50% negative
-        U =  0: 20%
-        U =  1: 20%  } 30% positive
-        U =  2:  8%
-        U =  3:  2%
+        U = -4: 15%
+        U = -3: 20%
+        U = -2: 25%
+        U = -1: 20%  } 80% negative
+        U =  0: 10%
+        U =  1:  5%  } 15% positive
+        U =  2:  3%
+        U =  3:  1%
+        U =  4:  1%
         
-        Expected value ≈ -0.5 (negative bias)
+        Expected value ≈ -1.8 (very strong negative bias)
         """
-        probs = np.array([0.05, 0.15, 0.30, 0.20, 0.20, 0.08, 0.02])
+        probs = np.array([0.15, 0.20, 0.25, 0.20, 0.10, 0.05, 0.03, 0.01, 0.01])
         return probs / probs.sum()
     
     def transition(self, X, U_current, U_next, intervene=False):
