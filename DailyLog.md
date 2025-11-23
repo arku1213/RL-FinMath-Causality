@@ -117,14 +117,7 @@ Day 40 - Friday, November 7th:
 - Optimized Incomplete Case Code
 - Learned about ACENET + benefits
 
-Next goals:
-
-- 2D Slices
-- Continue Reading + Simpson's Paradox
-- Review Shell Commands
-
 - Fix Complete Replication Case & Trinomial Incomplete Case to match N-nomial Incomplete Case
-- Delete Complete Super-Replication Case
 - Adapt RL code for Causality
 - RL for Phase B
 - Math for Phase B
