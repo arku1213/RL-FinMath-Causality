@@ -117,7 +117,7 @@ Day 40 - Friday, November 7th:
 - Optimized Incomplete Case Code
 - Learned about ACENET + benefits
 
-- Fix Complete Replication Case & Trinomial Incomplete Case to match N-nomial Incomplete Case
+- Fix Complete Replication Case to match N-nomial Incomplete Case
 - Adapt RL code for Causality
 - RL for Phase B
 - Math for Phase B
