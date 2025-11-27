@@ -2489,32 +2489,16 @@ At time t=5:
   U_5= 4: Intervene if X_5 ∈ {3, 15, 16, 17}
 
 ────────────────────────────────────────────────────────────────────────────────
-AGGREGATE POLICY (across all times):
+SUMMARY
 ────────────────────────────────────────────────────────────────────────────────
 
-Intervene if:
-  X = 3 (for any U)
-  X = 4 and U ≤ 2
-  X = 5 and U ≤ -1
-  X = 6 and U ≤ -4
-  X = 15 and U ≥ 3
-  X = 16 and U ≥ 0
-  X = 17 and U ≥ -3
-
-
-================================================================================
-OPTIMAL INTERVENTION AT FIXED TIME k
-================================================================================
-
-Everyone must intervene at time k, choosing optimal target based on state.
-
-COMPARISON:
-────────────────────────────────────────────────────────────────────────────────
-  Optimal intervention at k=1:  E[Y] = 0.9503
-  Optimal intervention at k=2:  E[Y] = 0.9923
-  Optimal intervention at k=3:  E[Y] = 0.9137
-  Optimal intervention at k=4:  E[Y] = 0.6026
-  Optimal intervention at k=5:  E[Y] = 0.3451
+  X_n = 3 (for any U), intervene with X_n' = 15
+  X_n = 4 and U ≤ 2, intervene with X_n' = 16
+  X_n = 5 and U ≤ -1, intervene with X_n' = 17
+  X_n = 6 and U ≤ -4, intervene with X_n' = 17
+  X_n = 15 and U ≥ 3, intervene with X_n' = 14
+  X_n = 16 and U ≥ 0, intervene with X_n' = 15
+  X_n = 17 and U ≥ -3, intervene with X_n' = 16
 
 
 ================================================================================
@@ -2524,6 +2508,7 @@ VISUALIZATIONS
 3D scatter plot saved to: intervention_boundaries_3d.png
 2D time slices saved to: intervention_boundaries_3d_slices.png
 3D contour slices saved to: intervention_boundaries_3d_contour.png
+3D with intervention targets saved to: intervention_boundaries_3d_with_targets.png
 Interactive 3D plot (Plotly) saved to: intervention_boundaries_3d_interactive.html
   -> Open intervention_boundaries_3d_interactive.html in your web browser for full 3D interaction!
 
