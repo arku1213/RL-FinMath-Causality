@@ -861,6 +861,13 @@ class CausalOptimalStopping:
         3. Summary with intervention targets
         """
         
+        # Get the directory where this script is located
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Prepend script directory to all filenames
+        output_file = os.path.join(script_dir, output_file)
+        
         # Solve Algorithm 1
         V_optimal = self.solve_standard_optimal_stopping()
         
@@ -876,10 +883,14 @@ class CausalOptimalStopping:
             alg3_targets[k] = targets
         
         # Generate visualizations
-        viz_filename, slice_filename = self.plot_intervention_boundaries_3d()
-        contour_filename = self.plot_intervention_boundaries_3d_with_slices()
-        targets_filename = self.plot_intervention_boundaries_3d_with_targets()
-        plotly_filename = self.plot_intervention_boundaries_plotly()
+        viz_filename, slice_filename = self.plot_intervention_boundaries_3d(
+            filename=os.path.join(script_dir, 'intervention_boundaries_3d.png'))
+        contour_filename = self.plot_intervention_boundaries_3d_with_slices(
+            filename=os.path.join(script_dir, 'intervention_boundaries_3d_contour.png'))
+        targets_filename = self.plot_intervention_boundaries_3d_with_targets(
+            filename=os.path.join(script_dir, 'intervention_boundaries_3d_with_targets.png'))
+        plotly_filename = self.plot_intervention_boundaries_plotly(
+            filename=os.path.join(script_dir, 'intervention_boundaries_3d_interactive.html'))
         
         # Open file for output
         with open(output_file, 'w') as f:
