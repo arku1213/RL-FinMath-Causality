@@ -674,12 +674,6 @@ class CausalOptimalStopping:
         return filename
     
     def plot_intervention_boundaries_plotly(self, filename='intervention_boundaries_3d_interactive.html'):
-        """
-        Create interactive 3D plot using Plotly with continuous surfaces at each time slice
-        Color-coded by optimal intervention target
-        
-        Creates an HTML file that can be opened in any browser with full 3D rotation
-        """
         try:
             import plotly.graph_objects as go
         except ImportError:
@@ -689,7 +683,6 @@ class CausalOptimalStopping:
         fig = go.Figure()
         
         # Create a custom colorscale for intervention targets
-        # Black for DEATH, Blue for WAIT, then gradient for intervention targets
         colorscale = [
             [0.0, 'black'],      # DEATH (-2)
             [0.05, 'blue'],      # WAIT (-1)
@@ -757,7 +750,7 @@ class CausalOptimalStopping:
                 showscale=(t == 1),  # Only show colorbar for first slice
                 cmin=0,
                 cmax=1,
-                opacity=0.9,
+                opacity=0.8,  # Slightly more transparent to see arrows
                 name=f't={t}',
                 showlegend=False,
                 hoverinfo='text',
@@ -769,6 +762,38 @@ class CausalOptimalStopping:
                     x=1.02
                 ) if t == 1 else None
             ))
+            
+            # Add arrows for intervention states (sparse to avoid clutter)
+            # Only show arrows for every 2nd X value and every 2nd U value
+            for i, U in enumerate(U_grid):
+                if i % 2 != 0:  # Skip odd indices
+                    continue
+                for j, X in enumerate(X_grid):
+                    if j % 2 != 0:  # Skip odd indices
+                        continue
+                    
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    if policy == 'INTERVENE':
+                        target = self.optimal_intervention_target.get((t, X, U), None)
+                        if target is not None and target != X:  # Only show if there's movement
+                            # Arrow from (t, X, U) to (t, target, U)
+                            # Use Cone for 3D arrows
+                            fig.add_trace(go.Cone(
+                                x=[t],
+                                y=[X],
+                                z=[U],
+                                u=[0],  # No movement in t direction
+                                v=[target - X],  # Movement in X direction
+                                w=[0],  # No movement in U direction
+                                colorscale=[[0, 'green'], [1, 'green']],
+                                showscale=False,
+                                sizemode='absolute',
+                                sizeref=0.5,
+                                anchor='tail',
+                                showlegend=False,
+                                hoverinfo='skip',
+                                opacity=0.7
+                            ))
             
             # Add outline frame for this time slice
             outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
@@ -808,11 +833,18 @@ class CausalOptimalStopping:
             name='DEATH',
             showlegend=True
         ))
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None],
+            mode='markers',
+            marker=dict(size=10, color='green'),
+            name='→ Target (arrow)',
+            showlegend=True
+        ))
         
         # Update layout
         fig.update_layout(
             title={
-                'text': 'Interactive Intervention Policy Slices in (t, X, U, I) Space<br><sub>Color shows optimal intervention target X\'</sub>',
+                'text': 'Interactive Intervention Policy Slices in (t, X, U, I) Space<br><sub>Green arrows show intervention target X\' (sparse display)</sub>',
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': 18}
@@ -846,7 +878,7 @@ class CausalOptimalStopping:
         print("Open this file in your web browser to interact with the 3D plot!")
         
         return filename
-    
+        
     # ========================================================================
     # OUTPUT
     # ========================================================================
