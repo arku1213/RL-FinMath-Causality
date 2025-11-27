@@ -32,8 +32,6 @@ class CausalOptimalStopping:
         self.intervention_center = 10     # Only used as fallback
         
         # Shock distribution (negative bias = health tends to worsen)
-        # U = -3:  5%,  U = -2: 15%,  U = -1: 30%
-        # U =  0: 20%,  U =  1: 20%,  U =  2:  8%,  U =  3:  2%
         self.U_values = [-3, -2, -1, 0, 1, 2, 3]
         
         # ========================================================================
@@ -485,7 +483,10 @@ class CausalOptimalStopping:
         return filename, slice_filename
     
     def plot_intervention_boundaries_3d_with_slices(self, filename='intervention_boundaries_3d_contour.png'):
-
+        """
+        Create 3D plot with 2D contour slices at each time point
+        Similar to the example image - shows (X, U) slices at each t
+        """
         fig = plt.figure(figsize=(16, 12))
         ax = fig.add_subplot(111, projection='3d')
         
@@ -577,7 +578,106 @@ class CausalOptimalStopping:
         
         return filename
     
+    def plot_intervention_boundaries_3d_with_targets(self, filename='intervention_boundaries_3d_with_targets.png'):
+        """
+        Create 3D scatter plot showing intervention states and their optimal targets
+        Connected by lines to visualize the "jump"
+        """
+        fig = plt.figure(figsize=(16, 12))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Collect points for each policy type
+        intervene_points = {'t': [], 'X': [], 'U': [], 'target': []}
+        wait_points = {'t': [], 'X': [], 'U': []}
+        death_points = {'t': [], 'X': [], 'U': []}
+        
+        # Loop through all states (only I=0, where decisions happen)
+        for t in range(1, self.T):
+            for X in range(self.X_min, self.X_max + 1):
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), '?')
+                    
+                    if policy == 'INTERVENE':
+                        target = self.optimal_intervention_target.get((t, X, U), None)
+                        intervene_points['t'].append(t)
+                        intervene_points['X'].append(X)
+                        intervene_points['U'].append(U)
+                        intervene_points['target'].append(target)
+                    elif policy == 'WAIT':
+                        wait_points['t'].append(t)
+                        wait_points['X'].append(X)
+                        wait_points['U'].append(U)
+                    elif policy == 'no_action':
+                        death_points['t'].append(t)
+                        death_points['X'].append(X)
+                        death_points['U'].append(U)
+        
+        # Plot WAIT and DEATH first (background)
+        if len(wait_points['t']) > 0:
+            ax.scatter(wait_points['t'], wait_points['X'], wait_points['U'],
+                      c='blue', marker='o', s=30, alpha=0.2, label='WAIT')
+        
+        if len(death_points['t']) > 0:
+            ax.scatter(death_points['t'], death_points['X'], death_points['U'],
+                      c='black', marker='x', s=40, alpha=0.5, label='DEATH')
+        
+        # Plot intervention points and targets with lines
+        if len(intervene_points['t']) > 0:
+            # Plot current intervention states
+            ax.scatter(intervene_points['t'], intervene_points['X'], intervene_points['U'],
+                      c='red', marker='o', s=60, alpha=0.8, label='INTERVENE (current)', 
+                      edgecolors='darkred', linewidths=1.5)
+            
+            # Plot target states
+            target_X = intervene_points['target']
+            ax.scatter(intervene_points['t'], target_X, intervene_points['U'],
+                      c='green', marker='*', s=100, alpha=0.7, label='Target (X\')', 
+                      edgecolors='darkgreen', linewidths=1)
+            
+            # Draw lines from current to target
+            for i in range(len(intervene_points['t'])):
+                t = intervene_points['t'][i]
+                X_from = intervene_points['X'][i]
+                X_to = target_X[i]
+                U = intervene_points['U'][i]
+                
+                # Only draw line if there's actual movement
+                if X_from != X_to:
+                    ax.plot([t, t], [X_from, X_to], [U, U],
+                           'g-', alpha=0.4, linewidth=1.5)
+        
+        # Labels and title
+        ax.set_xlabel('Time (t)', fontsize=14, labelpad=10)
+        ax.set_ylabel('Health State (X)', fontsize=14, labelpad=10)
+        ax.set_zlabel('Shock (U)', fontsize=14, labelpad=10)
+        ax.set_title('Intervention States → Optimal Targets in (t, X, U) Space', fontsize=16, pad=20)
+        
+        # Set axis limits
+        ax.set_xlim(0.5, self.T - 0.5)
+        ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
+        ax.set_zlim(min(self.U_values) - 0.5, max(self.U_values) + 0.5)
+        ax.set_yticks(range(0, self.X_max + 1, 2))
+        
+        # Legend
+        ax.legend(loc='upper left', fontsize=11)
+        
+        # Grid
+        ax.grid(True, alpha=0.3)
+        
+        # Save
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        return filename
+    
     def plot_intervention_boundaries_plotly(self, filename='intervention_boundaries_3d_interactive.html'):
+        """
+        Create interactive 3D plot using Plotly with continuous surfaces at each time slice
+        Color-coded by optimal intervention target
+        
+        Creates an HTML file that can be opened in any browser with full 3D rotation
+        """
         try:
             import plotly.graph_objects as go
         except ImportError:
@@ -586,11 +686,17 @@ class CausalOptimalStopping:
         
         fig = go.Figure()
         
-        # Create a custom colorscale: 0=DEATH (black), 1=WAIT (blue), 2=INTERVENE (red)
+        # Create a custom colorscale for intervention targets
+        # Black for DEATH, Blue for WAIT, then gradient for intervention targets
         colorscale = [
-            [0.0, 'black'],
-            [0.5, 'blue'],
-            [1.0, 'red']
+            [0.0, 'black'],      # DEATH (-2)
+            [0.05, 'blue'],      # WAIT (-1)
+            [0.15, 'darkred'],   # Low targets (3-5)
+            [0.35, 'red'],       # Low-mid targets (6-8)
+            [0.50, 'orange'],    # Mid targets (9-11)
+            [0.65, 'yellow'],    # Mid-high targets (12-14)
+            [0.85, 'lightgreen'],# High targets (15-16)
+            [1.0, 'green']       # Highest target (17)
         ]
         
         # For each time slice, create ONE surface showing all policy types
@@ -599,49 +705,52 @@ class CausalOptimalStopping:
             X_grid = np.arange(self.X_min, self.X_max + 1)
             U_grid = np.array(self.U_values)
             
-            # Create policy matrix: 0=DEATH, 1=WAIT, 2=INTERVENE
+            # Create policy matrix: encode targets directly
             policy_matrix = np.zeros((len(U_grid), len(X_grid)))
             
             for i, U in enumerate(U_grid):
                 for j, X in enumerate(X_grid):
                     policy = self.policy.get((t, X, U, 0), '?')
                     if policy == 'INTERVENE':
-                        policy_matrix[i, j] = 2
+                        target = self.optimal_intervention_target.get((t, X, U), 10)
+                        policy_matrix[i, j] = target  # Use target value directly
                     elif policy == 'WAIT':
-                        policy_matrix[i, j] = 1
+                        policy_matrix[i, j] = -1  # Special value for WAIT
                     elif policy == 'no_action':
-                        policy_matrix[i, j] = 0
+                        policy_matrix[i, j] = -2  # Special value for DEATH
             
             # Create meshgrid for this time slice
             X_mesh, U_mesh = np.meshgrid(X_grid, U_grid)
             T_mesh = np.full_like(X_mesh, t, dtype=float)
             
-            # Normalize policy values to [0, 1] for colorscale
-            policy_normalized = policy_matrix / 2.0
-            # Create custom data for hover text
-            # Create custom data for hover text - must match mesh shape exactly
+            # Normalize for colorscale: map [-2, 17] to [0, 1]
+            policy_normalized = (policy_matrix + 2) / (self.safe_max + 2)
+            
             # Create text labels for each grid point
-            policy_text = []
-            for i in range(len(U_grid)):
+            hover_text = []
+            for i, U in enumerate(U_grid):
                 row = []
-                for j in range(len(X_grid)):
-                    if policy_matrix[i, j] == 0:
-                        row.append('DEATH')
-                    elif policy_matrix[i, j] == 1:
-                        row.append('WAIT')
+                for j, X in enumerate(X_grid):
+                    val = policy_matrix[i, j]
+                    if val == -2:
+                        policy_name = 'DEATH'
+                        row.append(f'Policy: {policy_name}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
+                    elif val == -1:
+                        policy_name = 'WAIT'
+                        row.append(f'Policy: {policy_name}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
                     else:
-                        row.append('INTERVENE')
-                policy_text.append(row)
-
-            policy_text = np.array(policy_text)
-
+                        policy_name = 'INTERVENE'
+                        target = int(val)
+                        row.append(f'Policy: {policy_name}<br>Target: X\'={target}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
+                hover_text.append(row)
+            
             # Add ONE surface for this time slice with all policies
             fig.add_trace(go.Surface(
                 x=T_mesh,
                 y=X_mesh,
                 z=U_mesh,
                 surfacecolor=policy_normalized,
-                customdata=policy_text,
+                text=hover_text,
                 colorscale=colorscale,
                 showscale=(t == 1),  # Only show colorbar for first slice
                 cmin=0,
@@ -649,30 +758,14 @@ class CausalOptimalStopping:
                 opacity=0.9,
                 name=f't={t}',
                 showlegend=False,
-                hovertemplate='<b>Policy: %{customdata}</b><br>Time: %{x:.0f}<br>Health: %{y:.0f}<br>Shock: %{z:.0f}<extra></extra>',
+                hoverinfo='text',
                 colorbar=dict(
-                    title="Policy",
-                    tickvals=[0, 0.5, 1],
-                    ticktext=["DEATH", "WAIT", "INTERVENE"],
-                    len=0.5,
+                    title="Target X'",
+                    tickvals=[0, 0.05, 0.3, 0.5, 0.7, 1.0],
+                    ticktext=["DEATH", "WAIT", "Low", "Mid", "High", "17"],
+                    len=0.6,
                     x=1.02
                 ) if t == 1 else None
-            ))
-            
-            # Add outline frame for this time slice
-            outline_x = [self.X_min, self.X_max, self.X_max, self.X_min, self.X_min]
-            outline_t = [t, t, t, t, t]
-            outline_u = [min(self.U_values), min(self.U_values), max(self.U_values), 
-                        max(self.U_values), min(self.U_values)]
-            
-            fig.add_trace(go.Scatter3d(
-                x=outline_t,
-                y=outline_x,
-                z=outline_u,
-                mode='lines',
-                line=dict(color='white', width=3),
-                showlegend=False,
-                hoverinfo='skip'
             ))
             
             # Add outline frame for this time slice
@@ -717,7 +810,7 @@ class CausalOptimalStopping:
         # Update layout
         fig.update_layout(
             title={
-                'text': 'Interactive Intervention Policy Slices in (t, X, U, I) Space',
+                'text': 'Interactive Intervention Policy Slices in (t, X, U, I) Space<br><sub>Color shows optimal intervention target X\'</sub>',
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': 18}
@@ -763,7 +856,7 @@ class CausalOptimalStopping:
         Shows:
         1. Standard Optimal Stopping (all states) with optimal intervention targets
         2. Threshold Policy extracted from optimal policy (detailed by t and U)
-        3. Algorithm 3: Optimal Intervention at Fixed Time k
+        3. Summary with intervention targets
         """
         
         # Solve Algorithm 1
@@ -772,7 +865,7 @@ class CausalOptimalStopping:
         # Extract detailed thresholds
         thresholds = self.extract_threshold_policy_detailed()
         
-        # Solve Algorithm 3 for all k
+        # Solve Algorithm 3 for all k (still needed for internal calculations)
         alg3_results = {}
         alg3_targets = {}
         for k in range(1, self.T):
@@ -783,6 +876,7 @@ class CausalOptimalStopping:
         # Generate visualizations
         viz_filename, slice_filename = self.plot_intervention_boundaries_3d()
         contour_filename = self.plot_intervention_boundaries_3d_with_slices()
+        targets_filename = self.plot_intervention_boundaries_3d_with_targets()
         plotly_filename = self.plot_intervention_boundaries_plotly()
         
         # Open file for output
@@ -836,7 +930,6 @@ class CausalOptimalStopping:
             # ================================================================
             # THRESHOLD POLICY
             # ================================================================
-            # ================================================================
             f.write(f"\n\n{'='*80}\n")
             f.write("THRESHOLD POLICY\n")
             f.write(f"{'='*80}\n\n")
@@ -852,68 +945,70 @@ class CausalOptimalStopping:
                         states_str = '∅'
                     f.write(f"  U_{t}={U:2d}: Intervene if X_{t} ∈ {states_str}\n")
 
-            # NEW: Aggregate across all times - by X value
+            # ================================================================
+            # SUMMARY WITH INTERVENTION TARGETS
+            # ================================================================
             f.write(f"\n{'─'*80}\n")
-            f.write("AGGREGATE POLICY (across all times):\n")
+            f.write("SUMMARY\n")
             f.write(f"{'─'*80}\n\n")
 
-            # Collect all (X, U) pairs that ever trigger intervention
-            intervene_conditions = {}  # {X: set of U values that trigger intervention}
+            # Collect all (X, U) pairs that trigger intervention and their targets
+            intervene_conditions = {}  # {X: {U: [targets]}}
 
             for t in range(1, self.T):
                 for U in self.U_values:
                     intervene_states = thresholds[(t, U)]
                     for X in intervene_states:
                         if X not in intervene_conditions:
-                            intervene_conditions[X] = set()
-                        intervene_conditions[X].add(U)
+                            intervene_conditions[X] = {}
+                        # Get the optimal target for this state
+                        target = self.optimal_intervention_target.get((t, X, U), None)
+                        if target is not None:
+                            if U not in intervene_conditions[X]:
+                                intervene_conditions[X][U] = []
+                            intervene_conditions[X][U].append(target)
 
-            # Sort by X and format output
+            # For each X, find the most common target and U pattern
             if intervene_conditions:
-                f.write("Intervene if:\n")
+                from collections import Counter
                 for X in sorted(intervene_conditions.keys()):
-                    U_set = sorted(intervene_conditions[X])
+                    U_target_map = intervene_conditions[X]
                     
-                    # Check if all U values are included
-                    if len(U_set) == len(self.U_values):
-                        f.write(f"  X = {X} (for any U)\n")
-                    else:
-                        # Find the pattern (e.g., U <= threshold)
-                        U_min = min(U_set)
-                        U_max = max(U_set)
+                    # Get all targets for this X across all U
+                    all_targets = []
+                    for targets_list in U_target_map.values():
+                        all_targets.extend(targets_list)
+                    
+                    # Find most common target
+                    if all_targets:
+                        target_counts = Counter(all_targets)
+                        most_common_target = target_counts.most_common(1)[0][0]
                         
-                        # Check if it's a contiguous range
-                        if U_set == list(range(U_min, U_max + 1)):
-                            if U_min == min(self.U_values):
-                                f.write(f"  X = {X} and U ≤ {U_max}\n")
-                            elif U_max == max(self.U_values):
-                                f.write(f"  X = {X} and U ≥ {U_min}\n")
-                            else:
-                                f.write(f"  X = {X} and {U_min} ≤ U ≤ {U_max}\n")
+                        # Get U values
+                        U_set = sorted(U_target_map.keys())
+                        
+                        # Format output
+                        if len(U_set) == len(self.U_values):
+                            f.write(f"  X_n = {X} (for any U), intervene with X_n' = {most_common_target}\n")
                         else:
-                            # Non-contiguous, list them
-                            U_str = '{' + ', '.join(map(str, U_set)) + '}'
-                            f.write(f"  X = {X} and U ∈ {U_str}\n")
+                            U_min = min(U_set)
+                            U_max = max(U_set)
+                            
+                            if U_set == list(range(U_min, U_max + 1)):
+                                if U_min == min(self.U_values):
+                                    f.write(f"  X_n = {X} and U ≤ {U_max}, intervene with X_n' = {most_common_target}\n")
+                                elif U_max == max(self.U_values):
+                                    f.write(f"  X_n = {X} and U ≥ {U_min}, intervene with X_n' = {most_common_target}\n")
+                                else:
+                                    f.write(f"  X_n = {X} and {U_min} ≤ U ≤ {U_max}, intervene with X_n' = {most_common_target}\n")
+                            else:
+                                U_str = '{' + ', '.join(map(str, U_set)) + '}'
+                                f.write(f"  X_n = {X} and U ∈ {U_str}, intervene with X_n' = {most_common_target}\n")
             else:
                 f.write("Never intervene (no states trigger intervention)\n")
             
             # ================================================================
-            # OPTIMAL INTERVENTION AT FIXED TIME k
-            # ================================================================
-            f.write(f"\n\n{'='*80}\n")
-            f.write("OPTIMAL INTERVENTION AT FIXED TIME k\n")
-            f.write(f"{'='*80}\n\n")
-            f.write("Everyone must intervene at time k, choosing optimal target based on state.\n\n")
-            
-            # Summary table
-            f.write("COMPARISON:\n")
-            f.write(f"{'─'*80}\n")
-            for k in range(1, self.T):
-                E_Y = alg3_results[k]
-                f.write(f"  Optimal intervention at k={k}:  E[Y] = {E_Y:.4f}\n")
-            
-            # ================================================================
-            # 3D VISUALIZATION
+            # VISUALIZATIONS
             # ================================================================
             f.write(f"\n\n{'='*80}\n")
             f.write("VISUALIZATIONS\n")
@@ -922,6 +1017,7 @@ class CausalOptimalStopping:
             f.write(f"3D scatter plot saved to: {viz_filename}\n")
             f.write(f"2D time slices saved to: {slice_filename}\n")
             f.write(f"3D contour slices saved to: {contour_filename}\n")
+            f.write(f"3D with intervention targets saved to: {targets_filename}\n")
             if plotly_filename:
                 f.write(f"Interactive 3D plot (Plotly) saved to: {plotly_filename}\n")
                 f.write(f"  -> Open {plotly_filename} in your web browser for full 3D interaction!\n")
@@ -933,6 +1029,7 @@ class CausalOptimalStopping:
         print(f"3D visualization saved to {viz_filename}")
         print(f"2D time slices saved to {slice_filename}")
         print(f"3D contour slices saved to {contour_filename}")
+        print(f"3D with intervention targets saved to {targets_filename}")
         if plotly_filename:
             print(f"Interactive Plotly visualization saved to {plotly_filename}")
 
