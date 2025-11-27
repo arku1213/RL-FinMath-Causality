@@ -1019,33 +1019,6 @@ class CausalOptimalStopping:
                                 f.write(f"  X_n = {X} and U ∈ {U_str}, intervene with X_n' = {most_common_target}\n")
             else:
                 f.write("Never intervene (no states trigger intervention)\n")
-            
-            # ================================================================
-            # VISUALIZATIONS
-            # ================================================================
-            f.write(f"\n\n{'='*80}\n")
-            f.write("VISUALIZATIONS\n")
-            f.write(f"{'='*80}\n\n")
-            
-            f.write(f"3D scatter plot saved to: {viz_filename}\n")
-            f.write(f"2D time slices saved to: {slice_filename}\n")
-            f.write(f"3D contour slices saved to: {contour_filename}\n")
-            f.write(f"3D with intervention targets saved to: {targets_filename}\n")
-            if plotly_filename:
-                f.write(f"Interactive 3D plot (Plotly) saved to: {plotly_filename}\n")
-                f.write(f"  -> Open {plotly_filename} in your web browser for full 3D interaction!\n")
-            
-            f.write(f"\n{'='*80}\n")
-        
-        # Console output
-        print(f"Results saved to {output_file}")
-        print(f"3D visualization saved to {viz_filename}")
-        print(f"2D time slices saved to {slice_filename}")
-        print(f"3D contour slices saved to {contour_filename}")
-        print(f"3D with intervention targets saved to {targets_filename}")
-        if plotly_filename:
-            print(f"Interactive Plotly visualization saved to {plotly_filename}")
-
 
 # Run algorithms
 if __name__ == "__main__":
