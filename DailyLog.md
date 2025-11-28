@@ -118,5 +118,4 @@ Day 40 - Friday, November 7th:
 - Learned about ACENET + benefits
 
 - Adapt RL code for Causality
-- RL for Phase B
 - Math for Phase B
