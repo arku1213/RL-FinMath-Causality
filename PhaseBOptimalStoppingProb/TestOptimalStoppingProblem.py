@@ -682,16 +682,11 @@ class CausalOptimalStopping:
         
         fig = go.Figure()
         
-        # Create a custom colorscale for intervention targets
+        # Simple 3-color scheme: black (DEATH), blue (WAIT), red (INTERVENE)
         colorscale = [
-            [0.0, 'black'],      # DEATH (-2)
-            [0.05, 'blue'],      # WAIT (-1)
-            [0.15, 'darkred'],   # Low targets (3-5)
-            [0.35, 'red'],       # Low-mid targets (6-8)
-            [0.50, 'orange'],    # Mid targets (9-11)
-            [0.65, 'yellow'],    # Mid-high targets (12-14)
-            [0.85, 'lightgreen'],# High targets (15-16)
-            [1.0, 'green']       # Highest target (17)
+            [0.0, 'black'],      # DEATH = 0
+            [0.5, 'blue'],       # WAIT = 1
+            [1.0, 'red']         # INTERVENE = 2
         ]
         
         # For each time slice, create ONE surface showing all policy types
@@ -700,26 +695,25 @@ class CausalOptimalStopping:
             X_grid = np.arange(self.X_min, self.X_max + 1)
             U_grid = np.array(self.U_values)
             
-            # Create policy matrix: encode targets directly
+            # Create policy matrix: 0=DEATH, 1=WAIT, 2=INTERVENE
             policy_matrix = np.zeros((len(U_grid), len(X_grid)))
             
             for i, U in enumerate(U_grid):
                 for j, X in enumerate(X_grid):
                     policy = self.policy.get((t, X, U, 0), '?')
                     if policy == 'INTERVENE':
-                        target = self.optimal_intervention_target.get((t, X, U), 10)
-                        policy_matrix[i, j] = target  # Use target value directly
+                        policy_matrix[i, j] = 2
                     elif policy == 'WAIT':
-                        policy_matrix[i, j] = -1  # Special value for WAIT
+                        policy_matrix[i, j] = 1
                     elif policy == 'no_action':
-                        policy_matrix[i, j] = -2  # Special value for DEATH
+                        policy_matrix[i, j] = 0
             
             # Create meshgrid for this time slice
             X_mesh, U_mesh = np.meshgrid(X_grid, U_grid)
             T_mesh = np.full_like(X_mesh, t, dtype=float)
             
-            # Normalize for colorscale: map [-2, 17] to [0, 1]
-            policy_normalized = (policy_matrix + 2) / (self.safe_max + 2)
+            # Normalize for colorscale: map [0, 2] to [0, 1]
+            policy_normalized = policy_matrix / 2.0
             
             # Create text labels for each grid point
             hover_text = []
@@ -727,72 +721,80 @@ class CausalOptimalStopping:
                 row = []
                 for j, X in enumerate(X_grid):
                     val = policy_matrix[i, j]
-                    if val == -2:
+                    if val == 0:
                         policy_name = 'DEATH'
                         row.append(f'Policy: {policy_name}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
-                    elif val == -1:
+                    elif val == 1:
                         policy_name = 'WAIT'
                         row.append(f'Policy: {policy_name}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
                     else:
                         policy_name = 'INTERVENE'
-                        target = int(val)
+                        target = self.optimal_intervention_target.get((t, X, U), '?')
                         row.append(f'Policy: {policy_name}<br>Target: X\'={target}<br>Time: {t}<br>Health: {X}<br>Shock: {U}')
                 hover_text.append(row)
             
-            # Add ONE surface for this time slice with all policies
             fig.add_trace(go.Surface(
                 x=T_mesh,
                 y=X_mesh,
                 z=U_mesh,
                 surfacecolor=policy_normalized,
-                text=hover_text,
                 colorscale=colorscale,
                 showscale=(t == 1),  # Only show colorbar for first slice
                 cmin=0,
                 cmax=1,
-                opacity=0.8,  # Slightly more transparent to see arrows
+                opacity=0.9,
                 name=f't={t}',
                 showlegend=False,
-                hoverinfo='text',
+                hoverinfo='skip',  # Changed from 'text' to 'skip'
                 colorbar=dict(
-                    title="Target X'",
-                    tickvals=[0, 0.05, 0.3, 0.5, 0.7, 1.0],
-                    ticktext=["DEATH", "WAIT", "Low", "Mid", "High", "17"],
-                    len=0.6,
+                    title="Policy",
+                    tickvals=[0, 0.5, 1.0],
+                    ticktext=["DEATH", "WAIT", "INTERVENE"],
+                    len=0.5,
                     x=1.02
                 ) if t == 1 else None
             ))
             
-            # Add arrows for intervention states (sparse to avoid clutter)
-            # Only show arrows for every 2nd X value and every 2nd U value
+            # Add arrows for intervention states showing target X'
+            # Show arrows for ALL intervention states
             for i, U in enumerate(U_grid):
-                if i % 2 != 0:  # Skip odd indices
-                    continue
                 for j, X in enumerate(X_grid):
-                    if j % 2 != 0:  # Skip odd indices
-                        continue
-                    
                     policy = self.policy.get((t, X, U, 0), '?')
                     if policy == 'INTERVENE':
                         target = self.optimal_intervention_target.get((t, X, U), None)
-                        if target is not None and target != X:  # Only show if there's movement
-                            # Arrow from (t, X, U) to (t, target, U)
-                            # Use Cone for 3D arrows
-                            fig.add_trace(go.Cone(
-                                x=[t],
-                                y=[X],
-                                z=[U],
-                                u=[0],  # No movement in t direction
-                                v=[target - X],  # Movement in X direction
-                                w=[0],  # No movement in U direction
-                                colorscale=[[0, 'green'], [1, 'green']],
-                                showscale=False,
-                                sizemode='absolute',
-                                sizeref=0.5,
-                                anchor='tail',
+                        if target is not None and target != X:
+                            # Draw line from current X to target X'
+                            fig.add_trace(go.Scatter3d(
+                                x=[t, t],
+                                y=[X, target],
+                                z=[U, U],
+                                mode='lines',
+                                line=dict(color='green', width=4),
                                 showlegend=False,
                                 hoverinfo='skip',
                                 opacity=0.7
+                            ))
+                            
+                            # Add arrowhead at target
+                            # Calculate direction
+                            direction = 1 if target > X else -1
+                            arrow_size = 0.3
+                            
+                            fig.add_trace(go.Cone(
+                                x=[t],
+                                y=[target - direction * arrow_size],
+                                z=[U],
+                                u=[0],
+                                v=[direction * arrow_size],
+                                w=[0],
+                                colorscale=[[0, 'green'], [1, 'green']],
+                                showscale=False,
+                                sizemode='absolute',
+                                sizeref=1.0,
+                                anchor='tip',
+                                showlegend=False,
+                                hoverinfo='skip',
+                                opacity=0.8
                             ))
             
             # Add outline frame for this time slice
@@ -806,7 +808,7 @@ class CausalOptimalStopping:
                 y=outline_x,
                 z=outline_u,
                 mode='lines',
-                line=dict(color='white', width=3),
+                line=dict(color='gray', width=2),
                 showlegend=False,
                 hoverinfo='skip'
             ))
@@ -835,16 +837,16 @@ class CausalOptimalStopping:
         ))
         fig.add_trace(go.Scatter3d(
             x=[None], y=[None], z=[None],
-            mode='markers',
-            marker=dict(size=10, color='green'),
-            name='→ Target (arrow)',
+            mode='lines',
+            line=dict(color='green', width=4),
+            name='→ Intervention Target',
             showlegend=True
         ))
         
         # Update layout
         fig.update_layout(
             title={
-                'text': 'Interactive Intervention Policy Slices in (t, X, U, I) Space<br><sub>Green arrows show intervention target X\' (sparse display)</sub>',
+                'text': 'Interactive Intervention Policy in (t, X, U) Space<br><sub>Green arrows show intervention target X\'</sub>',
                 'x': 0.5,
                 'xanchor': 'center',
                 'font': {'size': 18}
@@ -878,7 +880,7 @@ class CausalOptimalStopping:
         print("Open this file in your web browser to interact with the 3D plot!")
         
         return filename
-        
+            
     # ========================================================================
     # OUTPUT
     # ========================================================================
