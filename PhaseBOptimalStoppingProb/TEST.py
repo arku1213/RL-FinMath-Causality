@@ -232,15 +232,11 @@ class SimplifiedOptimalStopping:
                         targets = self.find_all_optimal_targets(t, X, U)
                         all_targets.update(targets)
                 
-                # Mark target region
+                # Mark target region (binary: 0 or 1)
                 for target_X in all_targets:
                     target_X_idx = target_X - self.X_min
                     if 0 <= target_X_idx < len(states):
-                        target_region[target_X_idx, t_idx] += 1
-        
-        # Normalize target region (darker = more states target this X)
-        if target_region.max() > 0:
-            target_region = target_region / target_region.max()
+                        target_region[target_X_idx, t_idx] = 1  # Just mark as 1, no accumulation
         
         # Create figure
         fig, ax = plt.subplots(figsize=(14, 10))
@@ -300,14 +296,191 @@ class SimplifiedOptimalStopping:
         print(f"2D heatmap saved to {filename}")
         return filename
 
+    def simulate_trajectories(self, n_sims=5, filename='intervention_simulations.png'):
+        print(f"Simulating {n_sims} trajectories...")
+        
+        if not self.policy:
+            print("Solving optimal stopping problem first...")
+            self.solve_optimal_stopping()
+        
+        # Run simulations
+        trajectories = []
+        
+        for sim in range(n_sims):
+            trajectory = {'t': [], 'X': [], 'intervened_at': None, 'survived': None}
+            
+            # Initialize - start at X0, sample first shock
+            t = 1
+            U_current = np.random.choice(self.U_values, p=self.U_probs)
+            X_current = self.X0  # <-- FIX: Just use X0 directly, no transition yet
+            I_current = 0
+            
+            trajectory['t'].append(t)
+            trajectory['X'].append(X_current)
+            
+            # Run trajectory
+            while t < self.T:
+                # Get policy for current state
+                policy = self.policy.get((t, X_current, U_current, I_current), 'WAIT')
+                
+                # Execute action
+                if policy == 'INTERVENE' and I_current == 0:
+                    X_target = self.optimal_intervention_target.get((t, X_current, U_current), X_current)
+                    X_current = X_target
+                    I_current = 1
+                    trajectory['intervened_at'] = t
+                
+                # Sample next shock and transition
+                U_next = np.random.choice(self.U_values, p=self.U_probs)
+                X_current = self.transition(X_current, U_next)
+                U_current = U_next
+                
+                t += 1
+                trajectory['t'].append(t)
+                trajectory['X'].append(X_current)
+            
+            # Check final outcome
+            trajectory['survived'] = self.compute_Y(X_current)
+            trajectories.append(trajectory)
+        
+        # Create visualization
+        fig, ax = plt.subplots(figsize=(14, 10))
+        
+        # First, recreate the heatmap background
+        times = np.arange(1, self.T)
+        states = np.arange(self.X_min, self.X_max + 1)
+        
+        policy_matrix = np.zeros((len(states), len(times)))
+        target_region = np.zeros((len(states), len(times)))
+        
+        for t_idx, t in enumerate(times):
+            for X_idx, X in enumerate(states):
+                if X < self.safe_min or X > self.safe_max:
+                    policy_matrix[X_idx, t_idx] = -1
+                    continue
+                
+                intervene_count = 0
+                wait_count = 0
+                
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), 'WAIT')
+                    if policy == 'INTERVENE':
+                        intervene_count += 1
+                    elif policy == 'WAIT':
+                        wait_count += 1
+                
+                if intervene_count > wait_count:
+                    policy_matrix[X_idx, t_idx] = 1
+                else:
+                    policy_matrix[X_idx, t_idx] = 0
+                
+                all_targets = set()
+                for U in self.U_values:
+                    if self.policy.get((t, X, U, 0)) == 'INTERVENE':
+                        targets = self.find_all_optimal_targets(t, X, U)
+                        all_targets.update(targets)
+                
+                for target_X in all_targets:
+                    target_X_idx = target_X - self.X_min
+                    if 0 <= target_X_idx < len(states):
+                        target_region[target_X_idx, t_idx] = 1
+        
+        # Plot heatmap
+        from matplotlib.colors import ListedColormap
+        colors = ['black', 'lightblue', 'lightcoral']
+        cmap = ListedColormap(colors)
+        
+        ax.imshow(policy_matrix, aspect='auto', origin='lower',
+                extent=[times[0]-0.5, times[-1]+0.5, 
+                        states[0]-0.5, states[-1]+0.5],
+                cmap=cmap, vmin=-1, vmax=1, alpha=0.4)
+        
+        ax.imshow(target_region, aspect='auto', origin='lower',
+                extent=[times[0]-0.5, times[-1]+0.5,
+                        states[0]-0.5, states[-1]+0.5],
+                cmap='Greens', alpha=0.3, vmin=0, vmax=1)
+        
+        # Add death zone boundaries
+        ax.axhline(y=self.safe_min - 0.5, color='red', linestyle='--', 
+                linewidth=2, alpha=0.7)
+        ax.axhline(y=self.safe_max + 0.5, color='red', linestyle='--', 
+                linewidth=2, alpha=0.7)
+        
+        # Plot trajectories
+        colors_sim = plt.cm.tab10(np.linspace(0, 1, n_sims))
+        
+        for idx, traj in enumerate(trajectories):
+            color = colors_sim[idx]
+            survived = traj['survived']
+            intervened_at = traj['intervened_at']
+            
+            # Plot line
+            label = f"Sim {idx+1}"
+            if survived:
+                label += " ✓"
+            else:
+                label += " ✗"
+            
+            ax.plot(traj['t'], traj['X'], 'o-', color=color, 
+                linewidth=2.5, markersize=8, alpha=0.9, label=label)
+            
+            # Mark intervention point with star
+            if intervened_at is not None:
+                intervened_idx = traj['t'].index(intervened_at)
+                ax.plot(traj['t'][intervened_idx], traj['X'][intervened_idx], 
+                    '*', color=color, markersize=20, markeredgecolor='yellow',
+                    markeredgewidth=2)
+        
+        # Labels and formatting
+        ax.set_xlabel('Time (t)', fontsize=14)
+        ax.set_ylabel('Health State (X)', fontsize=14)
+        ax.set_title(f'{n_sims} Simulated Trajectories with Optimal Policy\n' +
+                    'Stars (★) mark intervention, ✓=survived, ✗=died',
+                    fontsize=16, pad=20)
+        
+        ax.set_xticks(range(1, self.T + 1))
+        ax.set_yticks(range(self.X_min, self.X_max + 1))
+        ax.set_xlim(0.5, self.T + 0.5)
+        ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
+        
+        ax.grid(True, alpha=0.3, linestyle=':', color='gray')
+        ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
+        # Add legend for policy colors
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='black', alpha=0.4, label='DEATH (boundary)'),
+            Patch(facecolor='lightblue', alpha=0.4, label='WAIT (optimal)'),
+            Patch(facecolor='lightcoral', alpha=0.4, label='INTERVENE (optimal)'),
+            Patch(facecolor='green', alpha=0.3, label='Intervention Target Region')
+        ]
 
+        # Add trajectory legend elements
+        for idx in range(n_sims):
+            color = colors_sim[idx]
+            legend_elements.append(plt.Line2D([0], [0], color=color, linewidth=2.5, 
+                                            marker='o', markersize=8, 
+                                            label=f"Sim {idx+1}"))
 
-# Run the simplified analysis
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.9)
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Simulation plot saved to {filename}")
+        
+        # Print summary
+        print(f"\nSimulation Summary:")
+        for idx, traj in enumerate(trajectories):
+            status = "SURVIVED" if traj['survived'] else "DIED"
+            intervention = f"intervened at t={traj['intervened_at']}" if traj['intervened_at'] else "never intervened"
+            print(f"  Sim {idx+1}: {status}, {intervention}, final X={traj['X'][-1]}")
+        
+        return trajectories
+
 if __name__ == "__main__":
     model = SimplifiedOptimalStopping(X0=10)
     model.solve_optimal_stopping()
     model.create_2d_heatmap('intervention_heatmap_2d.png')
+    model.simulate_trajectories(n_sims=5, filename='intervention_simulations.png')
     
-    print("\n" + "="*80)
     print("Analysis Complete!")
-    print("="*80)
