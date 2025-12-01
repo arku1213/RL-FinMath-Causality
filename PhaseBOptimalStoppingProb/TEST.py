@@ -182,6 +182,10 @@ class SimplifiedOptimalStopping:
         - Green overlay: Intervention target region
         """
         
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        filename = os.path.join(script_dir, filename)
+
         print("Creating 2D intervention heatmap...")
         
         # Make sure we've solved the problem
@@ -297,6 +301,11 @@ class SimplifiedOptimalStopping:
         return filename
 
     def simulate_trajectories(self, n_sims=5, filename='intervention_simulations.png'):
+        
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        filename = os.path.join(script_dir, filename)
+        
         print(f"Simulating {n_sims} trajectories...")
         
         if not self.policy:
