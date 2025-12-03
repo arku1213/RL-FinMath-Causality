@@ -217,6 +217,59 @@ class CausalOptimalStopping:
         return total
     
     # ========================================================================
+    # NO INTERVENTION BASELINE
+    # ========================================================================
+    
+    def solve_no_intervention_baseline(self):
+        """
+        Compute E[Y] under NO INTERVENTION policy (always wait)
+        
+        This gives us the baseline to compute Average Treatment Effect:
+        ATE = E[Y^I] - E[Y^{no intervention}]
+        
+        Returns:
+        --------
+        E_Y_no_intervention : float
+            Expected outcome when never intervening
+        """
+        # Storage for no-intervention values
+        value_no_int = {}
+        
+        # Terminal condition
+        for XT in range(self.X_min, self.X_max + 1):
+            Y = self.compute_Y(XT)
+            for UT in self.U_values:
+                value_no_int[(self.T, XT, UT)] = Y
+        
+        # Backward induction - always wait (never intervene)
+        for t in range(self.T - 1, 0, -1):
+            for Xt in range(self.X_min, self.X_max + 1):
+                for Ut in self.U_values:
+                    # Boundary states - certain death
+                    if Xt < self.safe_min or Xt > self.safe_max:
+                        value_no_int[(t, Xt, Ut)] = 0.0
+                    else:
+                        # Just wait (no intervention allowed)
+                        total = 0.0
+                        for U_next in self.U_values:
+                            prob = self.U_probs[self.U_values.index(U_next)]
+                            X_next = self.transition(Xt, Ut, U_next, intervene=False)
+                            future = value_no_int.get((t+1, X_next, U_next), 0)
+                            total += prob * future
+                        
+                        value_no_int[(t, Xt, Ut)] = total
+        
+        # Compute E[Y] from initial state
+        E_Y = 0.0
+        for U1 in self.U_values:
+            prob = self.U_probs[self.U_values.index(U1)]
+            X1 = int(np.floor(self.X0 + U1/2))
+            X1 = np.clip(X1, self.X_min, self.X_max)
+            E_Y += prob * value_no_int.get((1, X1, U1), 0)
+        
+        return E_Y
+    
+    # ========================================================================
     # ALGORITHM 3: OPTIMAL INTERVENTION AT FIXED TIME k
     # ========================================================================
     
@@ -354,6 +407,263 @@ class CausalOptimalStopping:
                 thresholds[(t, U)] = intervene_states
         
         return thresholds
+    
+    def find_all_optimal_targets(self, t, Xt, Ut, tolerance=1e-6):
+        """
+        Find ALL intervention targets that achieve (approximately) optimal value
+        
+        This creates the "intervention region" at later times when multiple
+        targets give the same E[Y]
+        
+        Parameters:
+        -----------
+        t : int
+            Current time
+        Xt : int
+            Current health state
+        Ut : int
+            Current shock
+        tolerance : float
+            Tolerance for considering values equal
+        
+        Returns:
+        --------
+        optimal_targets : list of int
+            All X' values that achieve the maximum E[Y]
+        """
+        best_value = -np.inf
+        target_values = {}
+        
+        # Compute value for each possible target
+        for X_target in range(self.safe_min, self.safe_max + 1):
+            total = 0.0
+            
+            for U_next in self.U_values:
+                prob = self.U_probs[self.U_values.index(U_next)]
+                X_next = self.transition(X_target, Ut, U_next, intervene=False)
+                future = self.value_function.get((t+1, X_next, U_next, 1), 0)
+                total += prob * future
+            
+            target_values[X_target] = total
+            if total > best_value:
+                best_value = total
+        
+        # Find all targets within tolerance of best value
+        optimal_targets = [X_target for X_target, val in target_values.items() 
+                          if abs(val - best_value) < tolerance]
+        
+        return optimal_targets
+    
+    # ========================================================================
+    # HEATMAP VERIFICATION
+    # ========================================================================
+    
+    def verify_heatmap_consistency(self):
+        """
+        Verify that the heatmap representation is consistent with the full policy
+        
+        Prints warnings if there are states where the majority vote doesn't
+        accurately represent the underlying policy structure.
+        
+        Returns:
+        --------
+        consistency_report : dict
+            Statistics about policy distribution at each (t, X)
+        """
+        print("\n" + "="*25)
+        print("VERIFYING HEATMAP CONSISTENCY")
+        print("="*25 + "\n")
+        
+        consistency_report = {}
+        
+        for t in range(1, self.T):
+            for X in range(self.X_min, self.X_max + 1):
+                # Skip boundary states
+                if X < self.safe_min or X > self.safe_max:
+                    continue
+                
+                # Count policies across all U values
+                intervene_count = 0
+                wait_count = 0
+                intervene_U = []
+                wait_U = []
+                
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), 'WAIT')
+                    if policy == 'INTERVENE':
+                        intervene_count += 1
+                        intervene_U.append(U)
+                    elif policy == 'WAIT':
+                        wait_count += 1
+                        wait_U.append(U)
+                
+                # Determine heatmap color
+                if intervene_count > wait_count:
+                    heatmap_color = 'RED'
+                else:
+                    heatmap_color = 'WHITE'
+                
+                # Store in report
+                consistency_report[(t, X)] = {
+                    'heatmap_color': heatmap_color,
+                    'intervene_count': intervene_count,
+                    'wait_count': wait_count,
+                    'intervene_U': intervene_U,
+                    'wait_U': wait_U,
+                    'total_U': len(self.U_values)
+                }
+                
+                # Print states with close splits (potential information loss)
+                if abs(intervene_count - wait_count) <= 2 and intervene_count > 0 and wait_count > 0:
+                    print(f"⚠️  Close split at (t={t}, X={X}): "
+                          f"{intervene_count} INTERVENE vs {wait_count} WAIT → Heatmap shows {heatmap_color}")
+                    print(f"   INTERVENE for U ∈ {intervene_U}")
+                    print(f"   WAIT for U ∈ {wait_U}\n")
+        
+        # Summary statistics
+        total_states = len(consistency_report)
+        close_splits = sum(1 for v in consistency_report.values() 
+                          if abs(v['intervene_count'] - v['wait_count']) <= 2 
+                          and v['intervene_count'] > 0 and v['wait_count'] > 0)
+        
+        print(f"Summary:")
+        print(f"  Total (t, X) states analyzed: {total_states}")
+        print(f"  States with close splits (±2): {close_splits}")
+        print(f"  Information preserved: {100*(1 - close_splits/total_states):.1f}%\n")
+        
+        return consistency_report
+    
+    # ========================================================================
+    # 2D HEATMAP
+    # ========================================================================
+    
+    def create_2d_heatmap(self, filename='intervention_heatmap_2d.png'):
+        """
+        Create 2D heatmap showing:
+        - X-axis: Time (t)
+        - Y-axis: Health state (X)
+        - Color: Policy (DEATH/WAIT/INTERVENE) averaged over U
+        - Green overlay: Intervention target region
+        
+        UPDATED: White background for WAIT states
+        """
+        
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        filename = os.path.join(script_dir, filename)
+
+        print("Creating 2D intervention heatmap...")
+        
+        # Make sure we've solved the problem
+        if not self.policy:
+            print("Solving optimal stopping problem first...")
+            self.solve_standard_optimal_stopping()
+        
+        # Create grid for heatmap
+        times = np.arange(1, self.T)
+        states = np.arange(self.X_min, self.X_max + 1)
+        
+        # Policy matrix: average policy across all U values
+        policy_matrix = np.zeros((len(states), len(times)))
+        
+        # Intervention target region matrix
+        target_region = np.zeros((len(states), len(times)))
+        
+        for t_idx, t in enumerate(times):
+            for X_idx, X in enumerate(states):
+                
+                # Check if this is a death boundary
+                if X < self.safe_min or X > self.safe_max:
+                    policy_matrix[X_idx, t_idx] = -1  # DEATH
+                    continue
+                
+                # Count policies across all U values
+                intervene_count = 0
+                wait_count = 0
+                
+                for U in self.U_values:
+                    policy = self.policy.get((t, X, U, 0), 'WAIT')
+                    if policy == 'INTERVENE':
+                        intervene_count += 1
+                    elif policy == 'WAIT':
+                        wait_count += 1
+                
+                # Assign policy based on majority
+                if intervene_count > wait_count:
+                    policy_matrix[X_idx, t_idx] = 1  # INTERVENE
+                else:
+                    policy_matrix[X_idx, t_idx] = 0  # WAIT
+                
+                # Find intervention target region
+                all_targets = set()
+                for U in self.U_values:
+                    if self.policy.get((t, X, U, 0)) == 'INTERVENE':
+                        targets = self.find_all_optimal_targets(t, X, U)
+                        all_targets.update(targets)
+                
+                # Mark target region
+                for target_X in all_targets:
+                    target_X_idx = target_X - self.X_min
+                    if 0 <= target_X_idx < len(states):
+                        target_region[target_X_idx, t_idx] = 1
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(14, 10))
+        
+        # Plot policy heatmap with WHITE for WAIT
+        from matplotlib.colors import ListedColormap
+        
+        # Custom colormap: black (death) -> white (wait) -> red (intervene)
+        colors = ['black', 'white', 'lightcoral']
+        cmap = ListedColormap(colors)
+        
+        im = ax.imshow(policy_matrix, aspect='auto', origin='lower',
+                      extent=[times[0]-0.5, times[-1]+0.5, 
+                             states[0]-0.5, states[-1]+0.5],
+                      cmap=cmap, vmin=-1, vmax=1, alpha=0.7)
+        
+        # Overlay intervention target region (green)
+        target_overlay = ax.imshow(target_region, aspect='auto', origin='lower',
+                                   extent=[times[0]-0.5, times[-1]+0.5,
+                                          states[0]-0.5, states[-1]+0.5],
+                                   cmap='Greens', alpha=0.6, vmin=0, vmax=1)
+        
+        # Add death zone boundaries
+        ax.axhline(y=self.safe_min - 0.5, color='red', linestyle='--', 
+                  linewidth=2, label='Death Boundary')
+        ax.axhline(y=self.safe_max + 0.5, color='red', linestyle='--', 
+                  linewidth=2)
+        
+        # Labels and title
+        ax.set_xlabel('Time (t)', fontsize=14)
+        ax.set_ylabel('Health State (X)', fontsize=14)
+        ax.set_title('Intervention Policy Heatmap: Evolution Over Time\n' +
+                    'White=WAIT, Red=INTERVENE, Black=DEATH, Green=Target Region',
+                    fontsize=16, pad=20)
+        
+        # Set ticks
+        ax.set_xticks(times)
+        ax.set_yticks(range(self.X_min, self.X_max + 1))
+        
+        # Add grid
+        ax.grid(True, alpha=0.3, linestyle=':', color='gray')
+        
+        # Add legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='black', label='DEATH (boundary)'),
+            Patch(facecolor='white', edgecolor='gray', label='WAIT (optimal)'),
+            Patch(facecolor='lightcoral', label='INTERVENE (optimal)'),
+            Patch(facecolor='green', alpha=0.6, label='Intervention Target Region')
+        ]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=11)
+        
+        plt.tight_layout()
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"2D heatmap saved to {filename}")
+        return filename
     
     # ========================================================================
     # POLISHED 3D VISUALIZATIONS
@@ -884,6 +1194,7 @@ class CausalOptimalStopping:
         print("Open this file in your web browser to interact with the 3D plot!")
         
         return filename
+    
     # ========================================================================
     # OUTPUT
     # ========================================================================
@@ -895,8 +1206,14 @@ class CausalOptimalStopping:
         script_dir = os.path.dirname(os.path.abspath(__file__))
         output_file = os.path.join(script_dir, output_file)
         
-        # Solve Algorithm 1
+        # Solve Algorithm 1 (Optimal intervention)
         V_optimal = self.solve_standard_optimal_stopping()
+        
+        # Solve No Intervention Baseline
+        V_no_intervention = self.solve_no_intervention_baseline()
+        
+        # Compute Average Treatment Effect
+        ATE = V_optimal - V_no_intervention
         
         # Extract detailed thresholds
         thresholds = self.extract_threshold_policy_detailed()
@@ -909,10 +1226,13 @@ class CausalOptimalStopping:
             alg3_results[k] = E_Y
             alg3_targets[k] = targets
         
-        # Generate POLISHED visualizations
-        print("\n" + "="*80)
-        print("Creating polished visualizations...")
-        print("="*80 + "\n")
+        # Verify heatmap consistency
+        consistency_report = self.verify_heatmap_consistency()
+        
+        # Generate visualizations
+        print("\n" + "="*25)
+        print("Creating visualizations...")
+        print("="*25 + "\n")
         
         self.plot_intervention_boundaries_3d_polished(
             filename=os.path.join(script_dir, 'intervention_boundaries_3d_polished.png'))
@@ -922,17 +1242,31 @@ class CausalOptimalStopping:
             filename=os.path.join(script_dir, 'intervention_boundaries_2d_slices_polished.png'))
         self.plot_intervention_boundaries_plotly(
             filename=os.path.join(script_dir, 'intervention_boundaries_3d_interactive.html'))
+        self.create_2d_heatmap(
+            filename=os.path.join(script_dir, 'intervention_heatmap_2d.png'))
         
         # Open file for output
         with open(output_file, 'w') as f:
-            f.write(f"{'='*40}\n")
+            # NEW SECTION: Expected Values at t=0
+            f.write(f"{'='*25}\n")
+            f.write("EXPECTED OUTCOMES AT t=0 (Starting from X₀=10)\n")
+            f.write(f"{'='*25}\n\n")
+            
+            f.write(f"E[Y¹] (Optimal Intervention):     {V_optimal:.6f}\n")
+            f.write(f"E[Y⁰] (No Intervention):          {V_no_intervention:.6f}\n")
+            f.write(f"{'─'*25}\n")
+            f.write(f"Average Treatment Effect (ATE):  {ATE:.6f}\n")
+            f.write(f"{'─'*25}\n\n")
+            
+            
+            f.write(f"{'='*25}\n")
             f.write("STANDARD OPTIMAL STOPPING\n")
-            f.write(f"{'='*40}\n\n")
+            f.write(f"{'='*25}\n\n")
             
             for t in range(1, self.T + 1):
-                f.write(f"\n{'─'*40}\n")
+                f.write(f"\n{'─'*25}\n")
                 f.write(f"TIME t={t}\n")
-                f.write(f"{'─'*40}\n")
+                f.write(f"{'─'*25}\n")
                 
                 for X in range(self.X_min, self.X_max + 1):
                     f.write(f"\nX_{t}={X:2d}:\n")
@@ -961,9 +1295,9 @@ class CausalOptimalStopping:
                         else:
                             f.write(f"  U_{t}={U:2d}, I=1: no_action, E[Y]={value_used:.4f}\n")
             
-            f.write(f"\n\n{'='*80}\n")
+            f.write(f"\n\n{'='*25}\n")
             f.write("THRESHOLD POLICY\n")
-            f.write(f"{'='*80}\n\n")
+            f.write(f"{'='*25}\n\n")
 
             for t in range(1, self.T):
                 f.write(f"\nAt time t={t}:\n")
@@ -975,9 +1309,9 @@ class CausalOptimalStopping:
                         states_str = '∅'
                     f.write(f"  U_{t}={U:2d}: Intervene if X_{t} ∈ {states_str}\n")
 
-            f.write(f"\n{'─'*80}\n")
+            f.write(f"\n{'─'*25}\n")
             f.write("SUMMARY\n")
-            f.write(f"{'─'*80}\n\n")
+            f.write(f"{'─'*25}\n\n")
 
             intervene_conditions = {}
 
@@ -1027,9 +1361,9 @@ class CausalOptimalStopping:
             else:
                 f.write("Never intervene (no states trigger intervention)\n")
         
-        print("\n" + "="*80)
-        print("Complete! Polished visualizations created.")
-        print("="*80)
+        print("\n" + "="*25)
+        print("Complete! All visualizations and analysis created.")
+        print("="*25)
 
 
 # Run algorithms
