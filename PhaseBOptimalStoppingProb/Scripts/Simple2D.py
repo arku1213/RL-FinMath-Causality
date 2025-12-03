@@ -180,6 +180,8 @@ class SimplifiedOptimalStopping:
         - Y-axis: Health state (X)
         - Color: Policy (DEATH/WAIT/INTERVENE) averaged over U
         - Green overlay: Intervention target region
+        
+        UPDATED: White background for WAIT states
         """
         
         import os
@@ -229,27 +231,26 @@ class SimplifiedOptimalStopping:
                     policy_matrix[X_idx, t_idx] = 0  # WAIT
                 
                 # Find intervention target region
-                # For each (t, X), find all optimal targets across all U
                 all_targets = set()
                 for U in self.U_values:
                     if self.policy.get((t, X, U, 0)) == 'INTERVENE':
                         targets = self.find_all_optimal_targets(t, X, U)
                         all_targets.update(targets)
                 
-                # Mark target region (binary: 0 or 1)
+                # Mark target region
                 for target_X in all_targets:
                     target_X_idx = target_X - self.X_min
                     if 0 <= target_X_idx < len(states):
-                        target_region[target_X_idx, t_idx] = 1  # Just mark as 1, no accumulation
+                        target_region[target_X_idx, t_idx] = 1
         
         # Create figure
         fig, ax = plt.subplots(figsize=(14, 10))
         
-        # Plot policy heatmap
+        # Plot policy heatmap with WHITE for WAIT
         from matplotlib.colors import ListedColormap
         
-        # Custom colormap: black (death) -> blue (wait) -> red (intervene)
-        colors = ['black', 'lightblue', 'lightcoral']
+        # Custom colormap: black (death) -> white (wait) -> red (intervene)
+        colors = ['black', 'white', 'lightcoral']
         cmap = ListedColormap(colors)
         
         im = ax.imshow(policy_matrix, aspect='auto', origin='lower',
@@ -273,7 +274,7 @@ class SimplifiedOptimalStopping:
         ax.set_xlabel('Time (t)', fontsize=14)
         ax.set_ylabel('Health State (X)', fontsize=14)
         ax.set_title('Intervention Policy Heatmap: Evolution Over Time\n' +
-                    'Blue=WAIT, Red=INTERVENE, Black=DEATH, Green=Target Region',
+                    'White=WAIT, Red=INTERVENE, Black=DEATH, Green=Target Region',
                     fontsize=16, pad=20)
         
         # Set ticks
@@ -283,11 +284,11 @@ class SimplifiedOptimalStopping:
         # Add grid
         ax.grid(True, alpha=0.3, linestyle=':', color='gray')
         
-        # Add colorbars
+        # Add legend
         from matplotlib.patches import Patch
         legend_elements = [
             Patch(facecolor='black', label='DEATH (boundary)'),
-            Patch(facecolor='lightblue', label='WAIT (optimal)'),
+            Patch(facecolor='white', edgecolor='gray', label='WAIT (optimal)'),
             Patch(facecolor='lightcoral', label='INTERVENE (optimal)'),
             Patch(facecolor='green', alpha=0.6, label='Intervention Target Region')
         ]
@@ -316,12 +317,18 @@ class SimplifiedOptimalStopping:
         trajectories = []
         
         for sim in range(n_sims):
-            trajectory = {'t': [], 'X': [], 'intervened_at': None, 'survived': None}
+            trajectory = {
+                't': [], 
+                'X': [], 
+                'intervened_at': None, 
+                'intervention_target': None,
+                'survived': None
+            }
             
-            # Initialize - start at X0, sample first shock
+            # Initialize
             t = 1
             U_current = np.random.choice(self.U_values, p=self.U_probs)
-            X_current = self.X0  # <-- FIX: Just use X0 directly, no transition yet
+            X_current = self.X0
             I_current = 0
             
             trajectory['t'].append(t)
@@ -335,9 +342,10 @@ class SimplifiedOptimalStopping:
                 # Execute action
                 if policy == 'INTERVENE' and I_current == 0:
                     X_target = self.optimal_intervention_target.get((t, X_current, U_current), X_current)
+                    trajectory['intervened_at'] = t
+                    trajectory['intervention_target'] = X_target
                     X_current = X_target
                     I_current = 1
-                    trajectory['intervened_at'] = t
                 
                 # Sample next shock and transition
                 U_next = np.random.choice(self.U_values, p=self.U_probs)
@@ -394,9 +402,9 @@ class SimplifiedOptimalStopping:
                     if 0 <= target_X_idx < len(states):
                         target_region[target_X_idx, t_idx] = 1
         
-        # Plot heatmap
+        # Plot heatmap with WHITE for WAIT
         from matplotlib.colors import ListedColormap
-        colors = ['black', 'lightblue', 'lightcoral']
+        colors = ['black', 'white', 'lightcoral']
         cmap = ListedColormap(colors)
         
         ax.imshow(policy_matrix, aspect='auto', origin='lower',
@@ -422,6 +430,7 @@ class SimplifiedOptimalStopping:
             color = colors_sim[idx]
             survived = traj['survived']
             intervened_at = traj['intervened_at']
+            intervention_target = traj['intervention_target']
             
             # Plot line
             label = f"Sim {idx+1}"
@@ -433,18 +442,38 @@ class SimplifiedOptimalStopping:
             ax.plot(traj['t'], traj['X'], 'o-', color=color, 
                 linewidth=2.5, markersize=8, alpha=0.9, label=label)
             
-            # Mark intervention point with star
+            # Mark intervention with markers and continuity
             if intervened_at is not None:
                 intervened_idx = traj['t'].index(intervened_at)
+                
+                # Yellow star at PRE-intervention position
                 ax.plot(traj['t'][intervened_idx], traj['X'][intervened_idx], 
-                    '*', color=color, markersize=20, markeredgecolor='yellow',
-                    markeredgewidth=2)
+                    '*', color='yellow', markersize=20, markeredgecolor='black',
+                    markeredgewidth=2, zorder=10)
+                
+                # Green diamond at INTERVENTION TARGET
+                ax.plot(traj['t'][intervened_idx], intervention_target, 
+                    'D', color='lime', markersize=12, markeredgecolor='darkgreen',
+                    markeredgewidth=2, zorder=10, alpha=0.9)
+                
+                # BLACK arrow showing intervention jump
+                ax.annotate('', 
+                    xy=(traj['t'][intervened_idx], intervention_target),
+                    xytext=(traj['t'][intervened_idx], traj['X'][intervened_idx]),
+                    arrowprops=dict(arrowstyle='->', color='black', lw=2.5, alpha=0.8))
+                
+                # Dashed line from diamond to next timestep (showing shock effect)
+                if intervened_idx + 1 < len(traj['t']):
+                    next_t = traj['t'][intervened_idx + 1]
+                    next_X = traj['X'][intervened_idx + 1]
+                    ax.plot([intervened_at, next_t], [intervention_target, next_X], 
+                           '--', color=color, linewidth=2, alpha=0.6, zorder=5)
         
         # Labels and formatting
         ax.set_xlabel('Time (t)', fontsize=14)
         ax.set_ylabel('Health State (X)', fontsize=14)
         ax.set_title(f'{n_sims} Simulated Trajectories with Optimal Policy\n' +
-                    'Stars (★) mark intervention, ✓=survived, ✗=died',
+                    '★=pre-intervention, ◆=target, black arrow=intervention jump, dashed=shock effect',
                     fontsize=16, pad=20)
         
         ax.set_xticks(range(1, self.T + 1))
@@ -453,24 +482,38 @@ class SimplifiedOptimalStopping:
         ax.set_ylim(self.X_min - 0.5, self.X_max + 0.5)
         
         ax.grid(True, alpha=0.3, linestyle=':', color='gray')
-        ax.legend(loc='upper right', fontsize=10, framealpha=0.9)
-        # Add legend for policy colors
+        
+        # Add legend
         from matplotlib.patches import Patch
         legend_elements = [
             Patch(facecolor='black', alpha=0.4, label='DEATH (boundary)'),
-            Patch(facecolor='lightblue', alpha=0.4, label='WAIT (optimal)'),
+            Patch(facecolor='white', edgecolor='gray', alpha=0.4, label='WAIT (optimal)'),
             Patch(facecolor='lightcoral', alpha=0.4, label='INTERVENE (optimal)'),
-            Patch(facecolor='green', alpha=0.3, label='Intervention Target Region')
+            Patch(facecolor='green', alpha=0.3, label='Intervention Target Region'),
+            plt.Line2D([0], [0], marker='*', color='w', markerfacecolor='yellow', 
+                       markersize=15, markeredgecolor='black', markeredgewidth=2, 
+                       linestyle='', label='★ Pre-intervention'),
+            plt.Line2D([0], [0], marker='D', color='w', markerfacecolor='lime', 
+                       markersize=10, markeredgecolor='darkgreen', markeredgewidth=2, 
+                       linestyle='', label='◆ Target'),
+            plt.Line2D([0], [0], color='gray', linewidth=2, linestyle='--',
+                       label='- - Shock effect'),
         ]
 
         # Add trajectory legend elements
         for idx in range(n_sims):
             color = colors_sim[idx]
+            survived = trajectories[idx]['survived']
+            label = f"Sim {idx+1}"
+            if survived:
+                label += " ✓"
+            else:
+                label += " ✗"
             legend_elements.append(plt.Line2D([0], [0], color=color, linewidth=2.5, 
-                                            marker='o', markersize=8, 
-                                            label=f"Sim {idx+1}"))
+                                            marker='o', markersize=8, label=label))
 
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=10, framealpha=0.9)
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=9, framealpha=0.95)
+        
         plt.tight_layout()
         plt.savefig(filename, dpi=300, bbox_inches='tight')
         plt.close()
@@ -481,7 +524,7 @@ class SimplifiedOptimalStopping:
         print(f"\nSimulation Summary:")
         for idx, traj in enumerate(trajectories):
             status = "SURVIVED" if traj['survived'] else "DIED"
-            intervention = f"intervened at t={traj['intervened_at']}" if traj['intervened_at'] else "never intervened"
+            intervention = f"intervened at t={traj['intervened_at']}, target X'={traj['intervention_target']}" if traj['intervened_at'] else "never intervened"
             print(f"  Sim {idx+1}: {status}, {intervention}, final X={traj['X'][-1]}")
         
         return trajectories
