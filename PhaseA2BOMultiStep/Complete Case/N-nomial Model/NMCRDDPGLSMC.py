@@ -10,7 +10,7 @@ from scipy.optimize import minimize
 # CONFIGURATION - SCALABLE N-NOMIAL
 # ============================================================
 S0 = 100.0
-r = 0.05
+r = 0.00
 K = 100.0
 T_steps = 2  # Time steps
 dt = 1.0
