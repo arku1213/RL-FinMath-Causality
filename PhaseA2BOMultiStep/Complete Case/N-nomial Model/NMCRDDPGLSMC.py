@@ -12,11 +12,11 @@ from scipy.optimize import minimize
 S0 = 100.0
 r = 0.00
 K = 100.0
-T_steps = 2  # Time steps
+T_steps = 3  # Time steps
 dt = 1.0
 
 # N-NOMIAL PARAMETERS (Scalable!)
-N = 4  # Number of branches (2=binomial, 3=trinomial, 4=4-nomial, 5=5-nomial, etc.)
+N = 5  # Number of branches (2=binomial, 3=trinomial, 4=4-nomial, 5=5-nomial, etc.)
 sigma = 0.3
 lambda_param = np.sqrt(N - 1)  # Scales with N
 
@@ -744,15 +744,3 @@ if __name__ == "__main__":
     
     print("\n" + "="*60)
     print(f"SUCCESS RATE: {success_count}/{test_count} ({100*success_count/test_count:.1f}%)")
-    print("="*60)
-    print(f"\nPURE DEEP RL VALIDATION ({N}-NOMIAL):")
-    print(f"• State: [S/S0, t/T, path_encoding] - NO LSMC values!")
-    print(f"• Actor learned from REWARDS ONLY (trial-and-error)")
-    print(f"• LSMC hidden in reward function, NOT in state")
-    print(f"• Path encoding helps distinguish different histories")
-    print(f"• Optimizations: {TOTAL_EPISODES:,} episodes, LayerNorm, scaled params")
-    print(f"• Network scales with N: {HIDDEN_DIM} hidden units for N={N}")
-    print("="*60)
-    print("\nThe actor discovered optimal hedges through")
-    print("pure reinforcement learning - no supervision!")
-    print("="*60)
