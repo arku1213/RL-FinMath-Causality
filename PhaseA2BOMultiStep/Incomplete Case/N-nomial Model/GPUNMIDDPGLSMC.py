@@ -22,7 +22,7 @@ S0 = 100.0
 K = 100.0
 T_steps = 5
 N = 5 
-NUM_BINARIES = 2 
+NUM_BINARIES = 3 
 sigma = 0.20
 USE_SIGMOID = (N >= 5 or T_steps >= 5)
 NUM_SIMULATIONS = 20000
