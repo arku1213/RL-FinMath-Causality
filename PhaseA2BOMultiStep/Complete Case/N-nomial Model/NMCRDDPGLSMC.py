@@ -12,7 +12,7 @@ from scipy.optimize import minimize
 S0 = 100.0
 r = 0.00
 K = 100.0
-T_steps = 3  # Time steps
+T_steps = 4  # Time steps
 dt = 1.0
 
 # N-NOMIAL PARAMETERS (Scalable!)
