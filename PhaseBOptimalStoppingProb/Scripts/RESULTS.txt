@@ -4057,3 +4057,54 @@ X_10=20:
   U_10= 3, I=1: no_action, E[Y]=0.0000
   U_10= 4, I=0: E[Y]=0.0000
   U_10= 4, I=1: no_action, E[Y]=0.0000
+
+
+
+======================================================================
+MONTE CARLO VALIDATION (n=100,000 simulations)
+======================================================================
+
+OPTIMAL POLICY RESULTS:
+  Survived:      66,883 / 100,000 (66.883%)
+  Died:          33,117 / 100,000 (33.117%)
+  Expected (BI): 54.616%
+  Difference:    +12.267% (SE: ±0.149%)
+  Status:        ⚠ Outside 2 standard errors
+
+NO INTERVENTION BASELINE:
+  Survived:      4,793 / 100,000 (4.793%)
+  Died:          95,207 / 100,000 (95.207%)
+  Expected (BI): 2.935%
+  Difference:    +1.858% (SE: ±0.068%)
+  Status:        ⚠ Outside 2 standard errors
+
+AVERAGE TREATMENT EFFECT:
+  Monte Carlo:   0.620900 (62.090 pp)
+  Expected (BI): 0.516811 (51.681 pp)
+  Difference:    +10.409 pp
+
+INTERVENTION STATISTICS:
+  Never intervened:  7,562 / 100,000 (7.56%)
+  Avg. intervention time: t = 4.24
+
+  Intervention Time Distribution:
+    t=3: 33,616 (33.62%)
+    t=4: 25,694 (25.69%)
+    t=5: 20,042 (20.04%)
+    t=6: 6,840 (6.84%)
+    t=7: 3,416 (3.42%)
+    t=8: 1,866 (1.87%)
+    t=9: 964 (0.96%)
+
+  Most Common Targets:
+    X'=17: 59,310 (64.16% of interventions)
+    X'=16: 20,042 (21.68% of interventions)
+    X'=15: 6,840 (7.40% of interventions)
+    X'=14: 3,416 (3.70% of interventions)
+    X'=11: 1,866 (2.02% of interventions)
+
+======================================================================
+VALIDATION SUMMARY:
+⚠ Monte Carlo results differ from backward induction
+⚠ Check model implementation
+======================================================================
