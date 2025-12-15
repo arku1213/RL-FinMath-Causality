@@ -361,10 +361,14 @@ class SimplifiedOptimalStopping:
             }
             
             # Initialize - start at X0 at t=1
+            # Initialize - apply initial transition from t=0 to t=1
+            U_initial = np.random.choice(self.U_values, p=self.U_probs)
+            X_current = int(np.floor(self.X0 + U_initial))
+            X_current = np.clip(X_current, self.X_min, self.X_max)
+
             t = 1
-            X_current = self.X0
             I_current = 0
-            
+
             trajectory['t'].append(t)
             trajectory['X'].append(X_current)
             
@@ -686,9 +690,12 @@ class SimplifiedOptimalStopping:
             if (sim + 1) % 10000 == 0:
                 print(f"  Progress: {sim + 1:,} / {n_sims:,} simulations complete...")
             
-            # Initialize
+            # Initialize - Apply initial transition from t=0 to t=1
+            U_initial = np.random.choice(self.U_values, p=self.U_probs)
+            X_current = int(np.floor(self.X0 + U_initial))
+            X_current = np.clip(X_current, self.X_min, self.X_max)
+
             t = 1
-            X_current = self.X0
             I_current = 0
             intervened = False
             intervention_time = None
@@ -738,8 +745,12 @@ class SimplifiedOptimalStopping:
         
         for sim in range(n_sims):
             # Initialize
+            # Initialize - Apply initial transition from t=0 to t=1
+            U_initial = np.random.choice(self.U_values, p=self.U_probs)
+            X_current = int(np.floor(self.X0 + U_initial))
+            X_current = np.clip(X_current, self.X_min, self.X_max)
+
             t = 1
-            X_current = self.X0
             
             # Run trajectory WITHOUT intervention
             while t < self.T:
