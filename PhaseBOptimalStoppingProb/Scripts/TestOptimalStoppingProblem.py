@@ -586,6 +586,297 @@ class CausalOptimalStopping:
         print(f"2D heatmap saved to {filename}")
         return filename
     
+    def monte_carlo_validation(self, n_sims=100000, print_results=True, save_to_file=True):
+        """
+        Run large-scale Monte Carlo simulation to validate backward induction
+        
+        Parameters:
+        -----------
+        n_sims : int
+            Number of simulations (default 100,000)
+        print_results : bool
+            Whether to print detailed results to console
+        save_to_file : bool
+                Whether to append results to RESULTS.txt
+        
+        Returns:
+        --------
+        results : dict
+            Complete statistics from Monte Carlo validation
+        """
+        import os
+        from collections import Counter
+        
+        print(f"\nRunning Monte Carlo validation with {n_sims:,} simulations...")
+        print("This may take a few seconds...\n")
+        
+        if not self.policy:
+            print("Solving optimal stopping problem first...")
+            self.solve_standard_optimal_stopping()
+        
+        # Storage for results
+        optimal_results = {
+            'survived': 0,
+            'died': 0,
+            'intervention_times': [],
+            'intervention_targets': [],
+            'never_intervened': 0,
+            'final_states': []
+        }
+        
+        no_intervention_results = {
+            'survived': 0,
+            'died': 0,
+            'final_states': []
+        }
+        
+        # ========================================================================
+        # RUN SIMULATIONS WITH OPTIMAL POLICY
+        # ========================================================================
+        
+        for sim in range(n_sims):
+            # Progress indicator
+            if (sim + 1) % 10000 == 0:
+                print(f"  Progress: {sim + 1:,} / {n_sims:,} simulations complete...")
+            
+            # Initialize - Apply initial transition from t=0 to t=1
+            U_initial = np.random.choice(self.U_values, p=self.U_probs)
+            X_current = int(np.floor(self.X0 + U_initial/2))
+            X_current = np.clip(X_current, self.X_min, self.X_max)
+
+            t = 1
+            U_prev = U_initial  # Track previous shock for dampened dynamics
+            I_current = 0
+            intervened = False
+            intervention_time = None
+            intervention_target = None
+            
+            # Run trajectory with optimal policy
+            while t < self.T:
+                # Sample current shock
+                U_current = np.random.choice(self.U_values, p=self.U_probs)
+                
+                # Get policy
+                policy = self.policy.get((t, X_current, U_prev, I_current), 'WAIT')
+                
+                # Execute action
+                if policy == 'INTERVENE' and I_current == 0:
+                    X_target = self.optimal_intervention_target.get((t, X_current, U_prev), X_current)
+                    intervened = True
+                    intervention_time = t
+                    intervention_target = X_target
+                    X_current = X_target
+                    I_current = 1
+                
+                # Transition with dampened dynamics
+                X_current = self.transition(X_current, U_prev, U_current)
+                U_prev = U_current  # Update previous shock
+                t += 1
+            
+            # Record outcome
+            survived = self.compute_Y(X_current)
+            if survived:
+                optimal_results['survived'] += 1
+            else:
+                optimal_results['died'] += 1
+            
+            optimal_results['final_states'].append(X_current)
+            
+            if intervened:
+                optimal_results['intervention_times'].append(intervention_time)
+                optimal_results['intervention_targets'].append(intervention_target)
+            else:
+                optimal_results['never_intervened'] += 1
+        
+        # ========================================================================
+        # RUN SIMULATIONS WITH NO INTERVENTION
+        # ========================================================================
+        
+        print(f"\n  Running no-intervention baseline simulations...")
+        
+        for sim in range(n_sims):
+            # Initialize - Apply initial transition from t=0 to t=1
+            U_initial = np.random.choice(self.U_values, p=self.U_probs)
+            X_current = int(np.floor(self.X0 + U_initial/2))
+            X_current = np.clip(X_current, self.X_min, self.X_max)
+
+            t = 1
+            U_prev = U_initial  # Track previous shock
+            
+            # Run trajectory WITHOUT intervention
+            while t < self.T:
+                # Sample current shock
+                U_current = np.random.choice(self.U_values, p=self.U_probs)
+                
+                # Just transition (never intervene)
+                X_current = self.transition(X_current, U_prev, U_current)
+                U_prev = U_current  # Update previous shock
+                t += 1
+            
+            # Record outcome
+            survived = self.compute_Y(X_current)
+            if survived:
+                no_intervention_results['survived'] += 1
+            else:
+                no_intervention_results['died'] += 1
+            
+            no_intervention_results['final_states'].append(X_current)
+        
+        # ========================================================================
+        # COMPUTE STATISTICS
+        # ========================================================================
+        
+        # Survival rates
+        optimal_rate = optimal_results['survived'] / n_sims
+        no_int_rate = no_intervention_results['survived'] / n_sims
+        mc_ate = optimal_rate - no_int_rate
+        
+        # Expected values from backward induction
+        V_optimal = 0.0
+        for U1 in self.U_values:
+            prob = self.U_probs[self.U_values.index(U1)]
+            X1 = int(np.floor(self.X0 + U1/2))
+            X1 = np.clip(X1, self.X_min, self.X_max)
+            V_optimal += prob * self.value_function.get((1, X1, U1, 0), 0)
+        
+        V_no_int = self.solve_no_intervention_baseline()
+        expected_ate = V_optimal - V_no_int
+        
+        # Standard errors
+        se_optimal = np.sqrt(optimal_rate * (1 - optimal_rate) / n_sims)
+        se_no_int = np.sqrt(no_int_rate * (1 - no_int_rate) / n_sims)
+        
+        # Intervention statistics
+        intervention_time_dist = Counter(optimal_results['intervention_times'])
+        intervention_target_dist = Counter(optimal_results['intervention_targets'])
+        
+        avg_intervention_time = (np.mean(optimal_results['intervention_times']) 
+                                if optimal_results['intervention_times'] else None)
+        
+        # ========================================================================
+        # PREPARE OUTPUT
+        # ========================================================================
+        
+        output_lines = []
+        output_lines.append("\n" + "="*70)
+        output_lines.append(f"MONTE CARLO VALIDATION (n={n_sims:,} simulations)")
+        output_lines.append("="*70 + "\n")
+        
+        output_lines.append("OPTIMAL POLICY RESULTS:")
+        output_lines.append(f"  Survived:      {optimal_results['survived']:,} / {n_sims:,} ({optimal_rate*100:.3f}%)")
+        output_lines.append(f"  Died:          {optimal_results['died']:,} / {n_sims:,} ({(1-optimal_rate)*100:.3f}%)")
+        output_lines.append(f"  Expected (BI): {V_optimal*100:.3f}%")
+        output_lines.append(f"  Difference:    {(optimal_rate - V_optimal)*100:+.3f}% (SE: ±{se_optimal*100:.3f}%)")
+        
+        if abs(optimal_rate - V_optimal) < 2 * se_optimal:
+            output_lines.append(f"  Status:        ✓ Within 2 standard errors")
+        else:
+            output_lines.append(f"  Status:        ⚠ Outside 2 standard errors")
+        
+        output_lines.append("\nNO INTERVENTION BASELINE:")
+        output_lines.append(f"  Survived:      {no_intervention_results['survived']:,} / {n_sims:,} ({no_int_rate*100:.3f}%)")
+        output_lines.append(f"  Died:          {no_intervention_results['died']:,} / {n_sims:,} ({(1-no_int_rate)*100:.3f}%)")
+        output_lines.append(f"  Expected (BI): {V_no_int*100:.3f}%")
+        output_lines.append(f"  Difference:    {(no_int_rate - V_no_int)*100:+.3f}% (SE: ±{se_no_int*100:.3f}%)")
+        
+        if abs(no_int_rate - V_no_int) < 2 * se_no_int:
+            output_lines.append(f"  Status:        ✓ Within 2 standard errors")
+        else:
+            output_lines.append(f"  Status:        ⚠ Outside 2 standard errors")
+        
+        output_lines.append("\nAVERAGE TREATMENT EFFECT:")
+        output_lines.append(f"  Monte Carlo:   {mc_ate:.6f} ({mc_ate*100:.3f} pp)")
+        output_lines.append(f"  Expected (BI): {expected_ate:.6f} ({expected_ate*100:.3f} pp)")
+        output_lines.append(f"  Difference:    {(mc_ate - expected_ate)*100:+.3f} pp")
+        
+        output_lines.append("\nINTERVENTION STATISTICS:")
+        output_lines.append(f"  Never intervened:  {optimal_results['never_intervened']:,} / {n_sims:,} ({optimal_results['never_intervened']/n_sims*100:.2f}%)")
+        output_lines.append(f"  Avg. intervention time: t = {avg_intervention_time:.2f}" if avg_intervention_time else "  Avg. intervention time: N/A")
+        
+        output_lines.append("\n  Intervention Time Distribution:")
+        for t in sorted(intervention_time_dist.keys()):
+            count = intervention_time_dist[t]
+            pct = count / n_sims * 100
+            output_lines.append(f"    t={t}: {count:,} ({pct:.2f}%)")
+        
+        output_lines.append("\n  Most Common Targets:")
+        top_targets = intervention_target_dist.most_common(5)
+        for target, count in top_targets:
+            pct = count / len(optimal_results['intervention_targets']) * 100 if optimal_results['intervention_targets'] else 0
+            output_lines.append(f"    X'={target}: {count:,} ({pct:.2f}% of interventions)")
+        
+        output_lines.append("\n" + "="*70)
+        output_lines.append("VALIDATION SUMMARY:")
+        
+        validation_passed = (
+            abs(optimal_rate - V_optimal) < 2 * se_optimal and
+            abs(no_int_rate - V_no_int) < 2 * se_no_int
+        )
+        
+        if validation_passed:
+            output_lines.append("✓ Monte Carlo results match backward induction within statistical error!")
+            output_lines.append("✓ Model implementation is CORRECT!")
+        else:
+            output_lines.append("⚠ Monte Carlo results differ from backward induction")
+            output_lines.append("⚠ Check model implementation")
+        
+        output_lines.append("="*70 + "\n")
+        
+        # ========================================================================
+        # PRINT AND SAVE
+        # ========================================================================
+        
+        output_text = "\n".join(output_lines)
+        
+        if print_results:
+            print(output_text)
+        
+        if save_to_file:
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            results_file = os.path.join(script_dir, 'RESULTS.txt')
+            
+            with open(results_file, 'a') as f:
+                f.write("\n\n")
+                f.write(output_text)
+            
+            print(f"Monte Carlo results appended to RESULTS.txt")
+        
+        # ========================================================================
+        # RETURN RESULTS DICTIONARY
+        # ========================================================================
+        
+        results = {
+            'n_simulations': n_sims,
+            'optimal_policy': {
+                'survived': optimal_results['survived'],
+                'died': optimal_results['died'],
+                'rate': optimal_rate,
+                'expected_rate': V_optimal,
+                'standard_error': se_optimal
+            },
+            'no_intervention': {
+                'survived': no_intervention_results['survived'],
+                'died': no_intervention_results['died'],
+                'rate': no_int_rate,
+                'expected_rate': V_no_int,
+                'standard_error': se_no_int
+            },
+            'ate': {
+                'monte_carlo': mc_ate,
+                'expected': expected_ate
+            },
+            'intervention_stats': {
+                'never_intervened': optimal_results['never_intervened'],
+                'avg_time': avg_intervention_time,
+                'time_distribution': dict(intervention_time_dist),
+                'target_distribution': dict(intervention_target_dist)
+            },
+            'validation_passed': validation_passed
+        }
+        
+        return results
+
     # ========================================================================
     # POLISHED 3D VISUALIZATIONS
     # ========================================================================
@@ -1287,10 +1578,14 @@ class CausalOptimalStopping:
         print("="*25)
 
 
-# Run algorithms
 if __name__ == "__main__":
     model = CausalOptimalStopping(X0=10)
     
     # Solve optimal policies and generate output files
     output_file = 'RESULTS.txt'
     model.print_results(output_file)
+    
+    # Run Monte Carlo validation
+    mc_results = model.monte_carlo_validation(n_sims=100000, print_results=True, save_to_file=True)
+    
+    print("\nAnalysis Complete!")
