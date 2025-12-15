@@ -4065,44 +4065,44 @@ MONTE CARLO VALIDATION (n=100,000 simulations)
 ======================================================================
 
 OPTIMAL POLICY RESULTS:
-  Survived:      54,434 / 100,000 (54.434%)
-  Died:          45,566 / 100,000 (45.566%)
+  Survived:      54,506 / 100,000 (54.506%)
+  Died:          45,494 / 100,000 (45.494%)
   Expected (BI): 54.616%
-  Difference:    -0.182% (SE: ±0.157%)
+  Difference:    -0.110% (SE: ±0.157%)
   Status:        ✓ Within 2 standard errors
 
 NO INTERVENTION BASELINE:
-  Survived:      2,958 / 100,000 (2.958%)
-  Died:          97,042 / 100,000 (97.042%)
+  Survived:      2,850 / 100,000 (2.850%)
+  Died:          97,150 / 100,000 (97.150%)
   Expected (BI): 2.935%
-  Difference:    +0.023% (SE: ±0.054%)
+  Difference:    -0.085% (SE: ±0.053%)
   Status:        ✓ Within 2 standard errors
 
 AVERAGE TREATMENT EFFECT:
-  Monte Carlo:   0.514760 (51.476 pp)
+  Monte Carlo:   0.516560 (51.656 pp)
   Expected (BI): 0.516811 (51.681 pp)
-  Difference:    -0.205 pp
+  Difference:    -0.025 pp
 
 INTERVENTION STATISTICS:
-  Never intervened:  7,986 / 100,000 (7.99%)
-  Avg. intervention time: t = 3.33
+  Never intervened:  8,011 / 100,000 (8.01%)
+  Avg. intervention time: t = 3.32
 
   Intervention Time Distribution:
-    t=2: 33,543 (33.54%)
-    t=3: 25,980 (25.98%)
-    t=4: 14,312 (14.31%)
-    t=5: 10,945 (10.95%)
-    t=6: 3,653 (3.65%)
+    t=2: 33,674 (33.67%)
+    t=3: 25,805 (25.80%)
+    t=4: 14,346 (14.35%)
+    t=5: 10,923 (10.92%)
+    t=6: 3,743 (3.74%)
     t=7: 1,922 (1.92%)
-    t=8: 1,076 (1.08%)
-    t=9: 583 (0.58%)
+    t=8: 1,029 (1.03%)
+    t=9: 547 (0.55%)
 
   Most Common Targets:
-    X'=17: 73,835 (80.24% of interventions)
-    X'=16: 10,945 (11.89% of interventions)
-    X'=15: 3,653 (3.97% of interventions)
+    X'=17: 73,825 (80.25% of interventions)
+    X'=16: 10,923 (11.87% of interventions)
+    X'=15: 3,743 (4.07% of interventions)
     X'=14: 1,922 (2.09% of interventions)
-    X'=11: 1,076 (1.17% of interventions)
+    X'=11: 1,029 (1.12% of interventions)
 
 ======================================================================
 VALIDATION SUMMARY:

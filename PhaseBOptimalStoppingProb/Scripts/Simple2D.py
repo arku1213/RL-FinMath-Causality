@@ -361,12 +361,8 @@ class SimplifiedOptimalStopping:
             }
             
             # Initialize - start at X0 at t=1
-            # Initialize - apply initial transition from t=0 to t=1
-            U_initial = np.random.choice(self.U_values, p=self.U_probs)
-            X_current = int(np.floor(self.X0 + U_initial))
-            X_current = np.clip(X_current, self.X_min, self.X_max)
-
             t = 1
+            X_current = self.X0  # Start at 10
             I_current = 0
 
             trajectory['t'].append(t)
@@ -472,8 +468,8 @@ class SimplifiedOptimalStopping:
                 linewidth=2, alpha=0.7, zorder=2)
         ax.axhline(y=self.safe_max + 0.5, color='red', linestyle='--', 
                 linewidth=2, alpha=0.7, zorder=2)
-        
-        # Plot trajectories
+            
+        # Plot line with thicker width
         colors_sim = plt.cm.tab10(np.linspace(0, 1, n_sims))
 
         for idx, traj in enumerate(trajectories):
@@ -482,13 +478,54 @@ class SimplifiedOptimalStopping:
             intervened_at = traj['intervened_at']
             intervention_target = traj['intervention_target']
             
-            # Plot line with thicker width
-            linestyle = '-' if survived else ':'
             label = f"Sim {idx+1} ({'survived' if survived else 'died'})"
             
-            ax.plot(traj['t'], traj['X'], 'o-', color=color, 
-                linewidth=3, markersize=6, alpha=0.9, label=label, 
-                linestyle=linestyle, zorder=10)
+            # Plot trajectory segment by segment
+            for i in range(len(traj['t']) - 1):
+                t_curr = traj['t'][i]
+                t_next = traj['t'][i+1]
+                X_curr = traj['X'][i]
+                X_next = traj['X'][i+1]
+                
+                # Determine linestyle for this segment
+                # Use dotted if the trajectory ultimately dies
+                linestyle = '-' if survived else ':'
+                
+                # Plot segment
+                if i == 0:
+                    # First segment gets the label
+                    ax.plot([t_curr, t_next], [X_curr, X_next], 
+                        'o-', color=color, linewidth=3, markersize=6, 
+                        alpha=0.9, label=label, linestyle=linestyle, zorder=10)
+                else:
+                    # Subsequent segments don't get labels
+                    ax.plot([t_curr, t_next], [X_curr, X_next], 
+                        'o-', color=color, linewidth=3, markersize=6, 
+                        alpha=0.9, linestyle=linestyle, zorder=10, label='_nolegend_')
+            
+            # Mark intervention
+            if intervened_at is not None:
+                # Find indices where t = intervened_at
+                t_indices = [i for i, t_val in enumerate(traj['t']) if t_val == intervened_at]
+                
+                if len(t_indices) >= 2:
+                    # First occurrence = pre-intervention, Second = target
+                    pre_idx = t_indices[0]
+                    target_idx = t_indices[1]
+                    
+                    X_before = traj['X'][pre_idx]
+                    X_target = traj['X'][target_idx]
+                    
+                    # Vertical dotted line: pre-intervention → target
+                    ax.plot([intervened_at, intervened_at], 
+                        [X_before, X_target],
+                        color=color, linestyle=':', linewidth=3, 
+                        alpha=0.8, zorder=12, label='_nolegend_')
+                    
+                    # Star at pre-intervention
+                    ax.plot(intervened_at, X_before, 
+                        '*', color=color, markersize=30, markeredgecolor='black',
+                        markeredgewidth=2, zorder=15, label='_nolegend_')
             
             # Mark intervention
             if intervened_at is not None:
