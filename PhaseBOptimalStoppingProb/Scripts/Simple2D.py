@@ -505,30 +505,6 @@ class SimplifiedOptimalStopping:
             
             # Mark intervention
             if intervened_at is not None:
-                # Find indices where t = intervened_at
-                t_indices = [i for i, t_val in enumerate(traj['t']) if t_val == intervened_at]
-                
-                if len(t_indices) >= 2:
-                    # First occurrence = pre-intervention, Second = target
-                    pre_idx = t_indices[0]
-                    target_idx = t_indices[1]
-                    
-                    X_before = traj['X'][pre_idx]
-                    X_target = traj['X'][target_idx]
-                    
-                    # Vertical dotted line: pre-intervention → target
-                    ax.plot([intervened_at, intervened_at], 
-                        [X_before, X_target],
-                        color=color, linestyle=':', linewidth=3, 
-                        alpha=0.8, zorder=12, label='_nolegend_')
-                    
-                    # Star at pre-intervention
-                    ax.plot(intervened_at, X_before, 
-                        '*', color=color, markersize=30, markeredgecolor='black',
-                        markeredgewidth=2, zorder=15, label='_nolegend_')
-            
-            # Mark intervention
-            if intervened_at is not None:
                 # Find indices
                 t_indices = [i for i, t_val in enumerate(traj['t']) if t_val == intervened_at]
                 
