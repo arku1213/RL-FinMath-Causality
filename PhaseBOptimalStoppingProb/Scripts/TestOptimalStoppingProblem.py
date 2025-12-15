@@ -1438,9 +1438,6 @@ class CausalOptimalStopping:
             alg3_results[k] = E_Y
             alg3_targets[k] = targets
         
-        # Verify heatmap consistency
-        consistency_report = self.verify_heatmap_consistency()
-        
         # Generate visualizations
         print("\n" + "="*25)
         print("Creating visualizations...")
