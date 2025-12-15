@@ -379,8 +379,19 @@ class SimplifiedOptimalStopping:
                 # Execute action
                 if policy == 'INTERVENE' and I_current == 0:
                     X_target = self.optimal_intervention_target.get((t, X_current, U_current), X_current)
+                    
+                    # Verify target is valid
+                    if X_target < self.safe_min or X_target > self.safe_max:
+                        print(f"WARNING: Invalid target X'={X_target} at t={t}, X={X_current}, U={U_current}")
+                        X_target = np.clip(X_target, self.safe_min, self.safe_max)
+                    
                     trajectory['intervened_at'] = t
                     trajectory['intervention_target'] = X_target
+                    
+                    # Record the TARGET position (before shock)
+                    trajectory['t'].append(t)
+                    trajectory['X'].append(X_target)
+                    
                     X_current = X_target
                     I_current = 1
                 
@@ -475,26 +486,40 @@ class SimplifiedOptimalStopping:
                 linewidth=3, markersize=6, alpha=0.9, label=label, 
                 linestyle=linestyle, zorder=10)
             
-            # Mark intervention with star AND dotted line to target
+            # Mark intervention
             if intervened_at is not None:
-                intervened_idx = traj['t'].index(intervened_at)
-                X_before = traj['X'][intervened_idx]
+                # Find indices
+                t_indices = [i for i, t_val in enumerate(traj['t']) if t_val == intervened_at]
                 
-                # Dotted line from pre-intervention to target
-                ax.plot([intervened_at, intervened_at], 
-                    [X_before, intervention_target],
-                    color=color, linestyle=':', linewidth=2, 
-                    alpha=0.7, zorder=12)
-                
-                # Large star at pre-intervention point
-                ax.plot(intervened_at, X_before, 
-                    '*', color=color, markersize=30, markeredgecolor='black',
-                    markeredgewidth=2, zorder=15)
-                
-                # Small circle at target (where intervention lands)
-                ax.plot(intervened_at, intervention_target,
-                    'o', color=color, markersize=10, markeredgecolor='black',
-                    markeredgewidth=1.5, zorder=14)
+                if len(t_indices) >= 2:
+                    # First occurrence = pre-intervention, Second = target
+                    pre_idx = t_indices[0]
+                    target_idx = t_indices[1]
+                    
+                    X_before = traj['X'][pre_idx]
+                    X_target = traj['X'][target_idx]
+                    
+                    # Vertical dotted line: pre-intervention → target
+                    ax.plot([intervened_at, intervened_at], 
+                        [X_before, X_target],
+                        color=color, linestyle=':', linewidth=3, 
+                        alpha=0.8, zorder=12, label='_nolegend_')
+                    
+                    # Star at pre-intervention
+                    ax.plot(intervened_at, X_before, 
+                        '*', color=color, markersize=30, markeredgecolor='black',
+                        markeredgewidth=2, zorder=15, label='_nolegend_')
+                    
+                    # If there's a next point (post-shock), draw connecting line
+                    if target_idx + 1 < len(traj['t']):
+                        t_next = traj['t'][target_idx + 1]
+                        X_post_shock = traj['X'][target_idx + 1]
+                        
+                        # Horizontal line: target → next time point showing shock effect
+                        ax.plot([intervened_at, t_next], 
+                            [X_target, X_post_shock],
+                            color=color, linestyle='-', linewidth=3, 
+                            alpha=0.9, zorder=10, label='_nolegend_')
         
         # Labels and formatting
         ax.set_xlabel('Time (t)', fontsize=16, fontweight='bold')
