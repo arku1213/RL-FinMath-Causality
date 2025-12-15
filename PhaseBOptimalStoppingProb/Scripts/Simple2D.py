@@ -138,6 +138,41 @@ class SimplifiedOptimalStopping:
         
         return total
     
+    def solve_no_intervention_baseline(self):
+        """Compute E[Y] under NO INTERVENTION policy"""
+        value_no_int = {}
+        
+        # Terminal condition
+        for XT in range(self.X_min, self.X_max + 1):
+            Y = self.compute_Y(XT)
+            for UT in self.U_values:
+                value_no_int[(self.T, XT, UT)] = Y
+        
+        # Backward induction - always wait
+        for t in range(self.T - 1, 0, -1):
+            for Xt in range(self.X_min, self.X_max + 1):
+                for Ut in self.U_values:
+                    if Xt < self.safe_min or Xt > self.safe_max:
+                        value_no_int[(t, Xt, Ut)] = 0.0
+                    else:
+                        total = 0.0
+                        for U_next in self.U_values:
+                            prob = self.U_probs[self.U_values.index(U_next)]
+                            X_next = self.transition(Xt, U_next)
+                            future = value_no_int.get((t+1, X_next, U_next), 0)
+                            total += prob * future
+                        value_no_int[(t, Xt, Ut)] = total
+        
+        # Compute E[Y] from initial state
+        E_Y = 0.0
+        for U1 in self.U_values:
+            prob = self.U_probs[self.U_values.index(U1)]
+            X1 = int(np.floor(self.X0 + U1))
+            X1 = np.clip(X1, self.X_min, self.X_max)
+            E_Y += prob * value_no_int.get((1, X1, U1), 0)
+        
+        return E_Y
+
     def find_all_optimal_targets(self, t, Xt, Ut, tolerance=1e-6):
         """
         Find ALL intervention targets that achieve (approximately) optimal value
@@ -425,7 +460,7 @@ class SimplifiedOptimalStopping:
         
         # Plot trajectories
         colors_sim = plt.cm.tab10(np.linspace(0, 1, n_sims))
-        
+
         for idx, traj in enumerate(trajectories):
             color = colors_sim[idx]
             survived = traj['survived']
@@ -440,14 +475,26 @@ class SimplifiedOptimalStopping:
                 linewidth=3, markersize=6, alpha=0.9, label=label, 
                 linestyle=linestyle, zorder=10)
             
-            # Mark intervention simply with a large star
+            # Mark intervention with star AND dotted line to target
             if intervened_at is not None:
                 intervened_idx = traj['t'].index(intervened_at)
+                X_before = traj['X'][intervened_idx]
                 
-                # Large star at intervention point
-                ax.plot(traj['t'][intervened_idx], traj['X'][intervened_idx], 
+                # Dotted line from pre-intervention to target
+                ax.plot([intervened_at, intervened_at], 
+                    [X_before, intervention_target],
+                    color=color, linestyle=':', linewidth=2, 
+                    alpha=0.7, zorder=12)
+                
+                # Large star at pre-intervention point
+                ax.plot(intervened_at, X_before, 
                     '*', color=color, markersize=30, markeredgecolor='black',
                     markeredgewidth=2, zorder=15)
+                
+                # Small circle at target (where intervention lands)
+                ax.plot(intervened_at, intervention_target,
+                    'o', color=color, markersize=10, markeredgecolor='black',
+                    markeredgewidth=1.5, zorder=14)
         
         # Labels and formatting
         ax.set_xlabel('Time (t)', fontsize=16, fontweight='bold')
@@ -480,11 +527,92 @@ class SimplifiedOptimalStopping:
             print(f"  Sim {idx+1}: {status}, {intervention}, final X={traj['X'][-1]}")
         
         return trajectories
+    
+    def print_results(self, output_file='RESULTS.txt'):
+        """Print comprehensive results to file"""
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_file = os.path.join(script_dir, output_file)
+        
+        # Solve both problems
+        if not self.policy:
+            self.solve_optimal_stopping()
+        
+        V_no_intervention = self.solve_no_intervention_baseline()
+        
+        # Compute V_optimal from initial state
+        V_optimal = 0.0
+        for U1 in self.U_values:
+            prob = self.U_probs[self.U_values.index(U1)]
+            X1 = int(np.floor(self.X0 + U1))
+            X1 = np.clip(X1, self.X_min, self.X_max)
+            V_optimal += prob * self.value_function.get((1, X1, U1, 0), 0)
+        
+        ATE = V_optimal - V_no_intervention
+        
+        with open(output_file, 'w') as f:
+            f.write(f"{'='*60}\n")
+            f.write("SIMPLIFIED OPTIMAL STOPPING - RESULTS\n")
+            f.write(f"{'='*60}\n\n")
+            
+            f.write(f"{'='*60}\n")
+            f.write("EXPECTED OUTCOMES AT t=0 (Starting from X₀=10)\n")
+            f.write(f"{'='*60}\n\n")
+            
+            f.write(f"E[Y¹] (Optimal Intervention):     {V_optimal:.6f}\n")
+            f.write(f"E[Y⁰] (No Intervention):          {V_no_intervention:.6f}\n")
+            f.write(f"{'─'*60}\n")
+            f.write(f"Average Treatment Effect (ATE):  {ATE:.6f}\n")
+            f.write(f"  ({ATE*100:.1f} percentage point improvement)\n")
+            f.write(f"{'─'*60}\n\n")
+            
+            f.write(f"{'='*60}\n")
+            f.write("OPTIMAL STOPPING POLICY - DETAILED RESULTS\n")
+            f.write(f"{'='*60}\n\n")
+            
+            for t in range(1, self.T + 1):
+                f.write(f"\n{'─'*60}\n")
+                f.write(f"TIME t={t}\n")
+                f.write(f"{'─'*60}\n")
+                
+                for X in range(self.X_min, self.X_max + 1):
+                    f.write(f"\nX_{t}={X:2d}:\n")
+                    
+                    for U in self.U_values:
+                        value = self.value_function.get((t, X, U, 0), 0)
+                        
+                        if t == self.T:
+                            f.write(f"  U_{t}={U:2d}, I=0: E[Y]={value:.4f}\n")
+                        else:
+                            policy = self.policy.get((t, X, U, 0), '?')
+                            if policy == 'INTERVENE':
+                                X_target = self.optimal_intervention_target.get((t, X, U), '?')
+                                f.write(f"  U_{t}={U:2d}, I=0: 🔴 INTERVENE → X'={X_target}, E[Y]={value:.4f}\n")
+                            elif policy == 'WAIT':
+                                f.write(f"  U_{t}={U:2d}, I=0: ⚪ WAIT, E[Y]={value:.4f}\n")
+                            elif policy == 'no_action':
+                                f.write(f"  U_{t}={U:2d}, I=0: ☠️  DEATH (boundary), E[Y]={value:.4f}\n")
+                            else:
+                                f.write(f"  U_{t}={U:2d}, I=0: ?, E[Y]={value:.4f}\n")
+                        
+                        value_used = self.value_function.get((t, X, U, 1), 0)
+                        policy_used = self.policy.get((t, X, U, 1), '?')
+                        if policy_used == 'no_action' and (X < self.safe_min or X > self.safe_max):
+                            f.write(f"  U_{t}={U:2d}, I=1: ☠️  DEATH (boundary), E[Y]={value_used:.4f}\n")
+                        else:
+                            f.write(f"  U_{t}={U:2d}, I=1: no_action, E[Y]={value_used:.4f}\n")
+        
+        print(f"Results saved to {output_file}")
+        print(f"\nKey Findings:")
+        print(f"  E[Y with optimal policy] = {V_optimal:.4f}")
+        print(f"  E[Y with no intervention] = {V_no_intervention:.4f}")
+        print(f"  Average Treatment Effect = {ATE:.4f} ({ATE*100:.1f}% improvement)")
 
 if __name__ == "__main__":
     model = SimplifiedOptimalStopping(X0=10)
     model.solve_optimal_stopping()
+    model.print_results('RESULTS.txt')
     model.create_2d_heatmap('intervention_heatmap_2d.png')
     model.simulate_trajectories(n_sims=5, filename='intervention_simulations.png')
     
-    print("Analysis Complete!")
+    print("\nAnalysis Complete!")
