@@ -21,8 +21,8 @@ print(f"{'='*60}\n")
 
 S0 = 100.0
 K = 100.0
-T_steps = 5
 N = 5 
+T_steps = 5
 NUM_BINARIES = 3 
 sigma = 0.20
 
