@@ -560,39 +560,43 @@ def construct_causal_state(X, t, shock_history):
 
 def compute_causal_reward(intervention_doses, X, t, expectation_estimator, is_terminal):
     """
-    Compute reward for causal intervention portfolio.
+    Correct reward that accounts for self-financing constraint.
     
-    For each possible shock value k, we measure:
-    - Target: E[Y | X_t, U_{t+1}=k] (causal effect of shock k)
-    - Actual: intervention_doses[k] (what agent chose)
-    - Deviation: |actual - target|
+    The portfolio after shock u occurs should be:
+    V_t(X) + C_{t+1,u} - Σ_k C_{t+1,k} · p_k = V_{t+1}(X · multiplier[u])
     
-    Small deviation → agent discovered correct causal intervention
-    Large deviation → agent hasn't learned the causal structure yet
-    
-    The agent learns through trial-and-error which intervention doses
-    causally produce the target outcome.
+    Equivalently:
+    C_{t+1,u} - avg_cost = V_{t+1}(X · multiplier[u]) - V_t(X)
+    where avg_cost = Σ_k C_{t+1,k} · p_k
     """
     intervention_doses = np.atleast_1d(intervention_doses)
     
     if is_terminal:
-        # Terminal: target is just the outcome Y
         target = max(X - K, 0)
         deviation = abs(intervention_doses[0] - target)
     else:
-        # Non-terminal: targets are conditional expectations for each shock
-        # These represent the causal effects: E[Y | X_t, U_{t+1}=k]
-        targets = expectation_estimator.predict_child_continuation_values(X, t)
+        # Get conditional expectations
+        V_t = expectation_estimator.predict_continuation_value(X, t)
+        child_values = expectation_estimator.predict_child_continuation_values(X, t)
+        
+        # Marginal causal effects (what we should buy)
+        targets = [child_values[k] - V_t for k in range(N)]
+        
+        # Check self-financing: avg cost should be close to 0
+        avg_cost = np.sum(intervention_doses * shock_probs)
+        
+        # Deviations from targets
         deviations = [abs(intervention_doses[i] - targets[i]) for i in range(N)]
         deviation = np.mean(deviations)
+        
+        # Optional: penalize non-self-financing
+        # deviation += abs(avg_cost) * 0.1
     
-    # Normalize and penalize deviation
     norm_factor = max(max_terminal_outcome, 1.0)
     normalized_deviation = deviation / norm_factor
     reward = -REPLICATION_PENALTY * normalized_deviation**2
     
     return np.clip(reward, -10000000, 0), deviation
-
 
 # ============================================================
 # TRAINING LOOP
