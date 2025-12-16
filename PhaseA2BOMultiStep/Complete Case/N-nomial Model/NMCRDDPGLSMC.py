@@ -16,7 +16,7 @@ T_steps = 4  # Time steps
 dt = 1.0
 
 # N-NOMIAL PARAMETERS (Scalable!)
-N = 5  # Number of branches (2=binomial, 3=trinomial, 4=4-nomial, 5=5-nomial, etc.)
+N = 4  # Number of branches (2=binomial, 3=trinomial, 4=4-nomial, 5=5-nomial, etc.)
 sigma = 0.3
 lambda_param = np.sqrt(N - 1)  # Scales with N
 

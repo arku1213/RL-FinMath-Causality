@@ -527,6 +527,11 @@ class SimplifiedOptimalStopping:
                         '*', color=color, markersize=30, markeredgecolor='black',
                         markeredgewidth=2, zorder=15, label='_nolegend_')
                     
+                    # TRIANGLE at target (intervention point)
+                    ax.plot(intervened_at, X_target,
+                        '^', color=color, markersize=14, markeredgecolor='black',
+                        markeredgewidth=2, zorder=14, label='_nolegend_')
+                    
                     # If there's a next point (post-shock), draw connecting line
                     if target_idx + 1 < len(traj['t']):
                         t_next = traj['t'][target_idx + 1]
