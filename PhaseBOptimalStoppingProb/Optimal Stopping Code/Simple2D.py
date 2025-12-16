@@ -516,11 +516,25 @@ class SimplifiedOptimalStopping:
                     X_before = traj['X'][pre_idx]
                     X_target = traj['X'][target_idx]
                     
-                    # Vertical dotted line: pre-intervention → target
-                    ax.plot([intervened_at, intervened_at], 
-                        [X_before, X_target],
-                        color=color, linestyle=':', linewidth=3, 
-                        alpha=0.8, zorder=12, label='_nolegend_')
+                    if survived:
+                        # ARROW from pre-intervention → target (only if survived)
+                        # Arrow stops SHORT of target so arrowhead is visible
+                        arrow_end = X_target - 0.3 if X_target > X_before else X_target + 0.3
+                        ax.annotate('', 
+                                xy=(intervened_at, arrow_end),  # Arrow ends BEFORE target
+                                xytext=(intervened_at, X_before),  # Arrow starts FROM pre-intervention
+                                arrowprops=dict(arrowstyle='->', 
+                                                color=color, 
+                                                lw=3, 
+                                                alpha=0.8,
+                                                mutation_scale=20),
+                                zorder=12)
+                    else:
+                        # DOTTED LINE from pre-intervention → target (if died)
+                        ax.plot([intervened_at, intervened_at], 
+                            [X_before, X_target],
+                            color=color, linestyle=':', linewidth=3, 
+                            alpha=0.8, zorder=12, label='_nolegend_')
                     
                     # Star at pre-intervention
                     ax.plot(intervened_at, X_before, 
