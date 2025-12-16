@@ -537,10 +537,13 @@ class SimplifiedOptimalStopping:
                         t_next = traj['t'][target_idx + 1]
                         X_post_shock = traj['X'][target_idx + 1]
                         
+                        # Line style depends on survival: dotted if died, solid if survived
+                        post_intervention_linestyle = ':' if not survived else '-'
+                        
                         # Horizontal line: target → next time point showing shock effect
                         ax.plot([intervened_at, t_next], 
                             [X_target, X_post_shock],
-                            color=color, linestyle='-', linewidth=3, 
+                            color=color, linestyle=post_intervention_linestyle, linewidth=3, 
                             alpha=0.9, zorder=10, label='_nolegend_')
         
         # Labels and formatting
