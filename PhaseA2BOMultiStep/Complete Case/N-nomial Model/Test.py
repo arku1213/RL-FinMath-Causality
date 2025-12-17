@@ -12,7 +12,7 @@ from scipy.optimize import minimize
 S0 = 100.0
 r = 0.00
 K = 100.0
-T_steps = 3  # Time steps
+T_steps = 4  # Time steps
 dt = 1.0
 
 # N-NOMIAL PARAMETERS (Scalable!)
@@ -20,17 +20,13 @@ N = 4  # Number of branches (2=binomial, 3=trinomial, 4=4-nomial, 5=5-nomial, et
 sigma = 0.3
 lambda_param = np.sqrt(N - 1)  # Scales with N
 
-# Generate N symmetric moves that achieve E[growth] = 1.0 with uniform probabilities
+# Generate N symmetric moves
 moves = []
 for i in range(N):
     # Symmetric moves: largest up, smallest down, middle near 1.0
     ratio = (i - (N-1)/2) / ((N-1)/2)  # -1 to +1
     move = np.exp(ratio * lambda_param * sigma * np.sqrt(dt))
     moves.append(move)
-
-# Adjust moves to ensure expected growth = 1.0 with uniform probabilities
-raw_expected_growth = np.mean(moves)
-moves = [m / raw_expected_growth for m in moves]
 
 moves = sorted(moves, reverse=True)  # [u1, u2, ..., m, ..., d2, d1]
 print(f"\nN={N} moves: {[f'{m:.4f}' for m in moves]}")
@@ -90,29 +86,54 @@ print("=" * 60)
 # ============================================================
 # N-NOMIAL PROBABILITIES
 # ============================================================
-# ============================================================
-# N-NOMIAL PROBABILITIES
-# ============================================================
 def calculate_nnomial_probabilities(moves, r, dt):
-    """Calculate uniform probabilities for N-nomial model (RL learning context)."""
+    """Calculate risk-neutral probabilities for N-nomial model."""
     N = len(moves)
+    growth = np.exp(r * dt)
     
-    # For RL learning in complete markets, use uniform probabilities
-    probs = [1/N] * N
+    def objective(p):
+        # Minimize deviation from uniform distribution
+        return np.sum((p - 1/N)**2)
+    
+    def constraint_mean(p):
+        # Risk-neutral condition
+        return np.sum(p * np.array(moves)) - growth
+    
+    def constraint_sum(p):
+        # Probabilities sum to 1
+        return np.sum(p) - 1
+    
+    # Initial guess: uniform distribution
+    p0 = [1/N] * N
+    
+    constraints = [
+        {'type': 'eq', 'fun': constraint_mean},
+        {'type': 'eq', 'fun': constraint_sum}
+    ]
+    bounds = [(0.001, 0.999)] * N
+    
+    result = minimize(objective, p0, method='SLSQP', bounds=bounds, constraints=constraints)
+    
+    if result.success:
+        probs = result.x
+    else:
+        print("WARNING: Optimization failed, using uniform fallback")
+        probs = [1/N] * N
     
     # Verify
     prob_sum = np.sum(probs)
     expected_growth = np.sum(probs * np.array(moves))
     
-    print(f"\n{N}-nomial Probabilities (Uniform for RL):")
+    print(f"\n{N}-nomial Probabilities:")
     for i, p in enumerate(probs):
         print(f"  p[{i}] = {p:.6f}")
     print(f"  Sum = {prob_sum:.6f}, Expected growth = {expected_growth:.6f}")
     
     assert abs(prob_sum - 1.0) < 1e-6, "Probabilities must sum to 1"
+    assert abs(expected_growth - growth) < 1e-2, "Risk-neutral condition violated"
     assert all(p >= 0 for p in probs), "Negative probabilities"
     
-    print("  ✓ Uniform probabilities for complete market RL")
+    print("  ✓ Valid risk-neutral probabilities")
     return probs
 
 
