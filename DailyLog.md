@@ -116,6 +116,3 @@ Day 40 - Friday, November 7th:
 - Got more clarity for Phase B - completely fixed code
 - Optimized Incomplete Case Code
 - Learned about ACENET + benefits
-
-- Adapt RL code for Causality
-- Math for Phase B
