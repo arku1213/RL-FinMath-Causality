@@ -518,10 +518,13 @@ class CausalOptimalStopping:
                 # Find intervention target region
                 all_targets = set()
                 for U in self.U_values:
-                    if self.policy.get((t, X, U, 0)) == 'INTERVENE':
-                        targets = self.find_all_optimal_targets(t, X, U)
-                        all_targets.update(targets)
-                
+                    policy = self.policy.get((t, X, U, 0))
+                    if policy == 'INTERVENE':
+                        # Only add target if THIS specific (t, X, U) intervenes
+                        target = self.optimal_intervention_target.get((t, X, U))
+                        if target is not None:
+                            all_targets.add(target)
+
                 # Mark target region
                 for target_X in all_targets:
                     target_X_idx = target_X - self.X_min
@@ -548,6 +551,63 @@ class CausalOptimalStopping:
                                    extent=[times[0]-0.5, times[-1]+0.5,
                                           states[0]-0.5, states[-1]+0.5],
                                    cmap='Greens', alpha=0.6, vmin=0, vmax=1)
+        
+        # Overlay intervention target region (green)
+        target_overlay = ax.imshow(target_region, aspect='auto', origin='lower',
+                                extent=[times[0]-0.5, times[-1]+0.5,
+                                        states[0]-0.5, states[-1]+0.5],
+                                cmap='Greens', alpha=0.6, vmin=0, vmax=1)
+
+# Track which arrows we've drawn to avoid duplicates
+        drawn_arrows = set()
+
+        for t_idx, t in enumerate(times):
+            for X_idx, X in enumerate(states):
+                
+                # Only draw arrows from RED (intervention) states
+                if policy_matrix[X_idx, t_idx] == 1:  # INTERVENE
+                    
+                    # Find most common target across all U values for this (t, X)
+                    target_counts = {}
+                    
+                    for U in self.U_values:
+                        if self.policy.get((t, X, U, 0)) == 'INTERVENE':
+                            target = self.optimal_intervention_target.get((t, X, U), None)
+                            if target is not None:
+                                target_counts[target] = target_counts.get(target, 0) + 1
+                    
+                    if target_counts:
+                        # Get most common target
+                        most_common_target = max(target_counts, key=target_counts.get)
+                        
+                        # Only draw arrow if source ≠ target (no self-loops)
+                        if X != most_common_target:
+                            
+                            # Create unique key for this arrow to avoid duplicates
+                            arrow_key = (t, X, most_common_target)
+                            
+                            if arrow_key not in drawn_arrows:
+                                drawn_arrows.add(arrow_key)
+                                
+                                # Calculate arrow thickness based on "vote strength"
+                                # More U values agreeing = thicker arrow
+                                vote_strength = target_counts[most_common_target] / len(self.U_values)
+                                arrow_width = 0.5 + 1.5 * vote_strength  # Range: 0.5 to 2.0
+                                
+                                # Draw arrow from (t, X) → (t, most_common_target)
+                                # Offset slightly in X direction to avoid overlapping with cells
+                                ax.annotate('', 
+                                        xy=(t + 0.15, most_common_target),  # Arrow points TO target
+                                        xytext=(t - 0.15, X),  # Arrow starts FROM intervention state
+                                        arrowprops=dict(
+                                            arrowstyle='-|>',  # Arrow with head
+                                            color='black',      # Black arrows
+                                            lw=arrow_width,
+                                            alpha=0.7,
+                                            shrinkA=0,
+                                            shrinkB=0
+                                        ),
+                                        zorder=13)  # Draw on top of heatmap
         
         # Add death zone boundaries
         ax.axhline(y=self.safe_min - 0.5, color='red', linestyle='--', 
