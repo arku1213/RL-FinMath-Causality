@@ -481,7 +481,7 @@ class CausalOptimalStopping:
             self.solve_standard_optimal_stopping()
         
         # Create grid for heatmap
-        times = np.arange(1, self.T)
+        times = np.arange(1, self.T + 1)
         states = np.arange(self.X_min, self.X_max + 1)
         
         # Policy matrix: average policy across all U values
